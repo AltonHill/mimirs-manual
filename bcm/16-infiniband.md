@@ -52,6 +52,25 @@ ibv_devinfo | grep -E 'hca_id|fw_ver|node_guid'
 - [ ] Every IB port `Active` at the expected rate (NDR = 400 Gb/s)
 - [ ] One SM visible per fabric (`ibstat` shows `SM lid`)
 
+## 16.3b — UFM servers (when the site runs UFM)
+
+Sites with a managed Quantum fabric usually run NVIDIA UFM on a pair of
+dedicated servers instead of (or alongside) switch-resident SMs.
+
+- **UFM servers are physical — never VMs.** UFM needs real IB HCAs; a VM
+  has no fabric presence. Do not let a virtualization plan absorb them.
+- **Provision them like GPU nodes.** Give the UFM pair entries in
+  `inventory.csv`, their own category and image, and let BCM install
+  them like everything else — they run no GPU workloads, but they are
+  first-class nodes in the build. Fabric services (SM, UFM) come up
+  with the image; no hand-built exceptions.
+- **The head node has no fabric visibility** — doubly true when it is a
+  VM (the standard topology). IB is configured "in the blind" from
+  `cmsh` across the provisioning network; fabric state is read back
+  from UFM or from the GPU nodes (`ibstat`, `ibv_devinfo`, §16.5),
+  never from the head node. If a validation step seems to require IB
+  access from the head node, it is written wrong — move it to a node.
+
 ## 16.4 — IPoIB (only if the site uses it)
 
 If `gpu-ib` carries IP traffic, each GPU node needs an `ib0` interface
