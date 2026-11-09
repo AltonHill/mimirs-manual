@@ -4,6 +4,16 @@ Deploy Ceph Tentacle on the three hyperconverged nodes: install, initialize, MON
 
 **Design targets:** PVE 9.2.x + Ceph Tentacle 20.2.4. Three MONs (one per node), colocated MGRs, 6 OSDs (2 per node), default replicated CRUSH rule against the `host` failure domain.
 
+> **Scope note — no CephFS in this design.** All VM storage is RBD images; that
+> is the native Proxmox path (live migration, HA, and backups all ride on it).
+> CephFS (MDS daemons, shared POSIX filesystem) is intentionally **not**
+> deployed — nothing in the workload requires shared file storage, and the MDS
+> tier would add RAM/CPU cost and operational surface for no benefit. If a
+> future site needs CephFS, that is a design change with its own section — and
+> that section is where an orphaned-subvolume cleanup audit belongs (see the
+> August 2026 cautionary runbook: ~16 stranded staging subvolumes, ~76 GiB,
+> undercounted from a single cluster's PVs).
+
 **Variables** — defined in [00-overview/variables.sh](../00-overview/variables.sh); **do not redefine them here**, source the file first:
 
 ```bash
@@ -22,6 +32,7 @@ All `pveceph` steps below run as `root`. Steps marked "each node" must be execut
 
 - §01 cluster join and §02 network are complete: the Ceph public and cluster networks are up on every node, MTU 9000 verified end-to-end.
 - §00a physical bring-up has **confirmed the PM1743s are wired direct-to-CPU (x4)** and do NOT appear in `storcli /c0/pall`. If any NVMe shows up under StorCLI, stop — recable before continuing.
+- **Flat-layout sites:** the public network may be the pre-existing service/data VLAN (the nodes' bond IPs) and the cluster network one added VLAN — see [docs/site-profile-flat.md](../../docs/site-profile-flat.md). `pveceph init` takes both forms unchanged; what matters is that `CEPH_PUBLIC_NET` / `CEPH_CLUSTER_NET` in `variables.sh` describe what §02 actually built.
 
 ---
 

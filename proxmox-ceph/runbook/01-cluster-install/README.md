@@ -86,6 +86,14 @@ Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
 
+> **Guardrail — enterprise repo 401s.** Without a Proxmox subscription key, the
+> enterprise repository answers `apt update` with `401 Unauthorized`. It is
+> harmless but noisy, and the wall of red can mask real errors later. That is
+> why step 3b disables the enterprise `.sources` file *before* the first
+> `apt update` below — do not skip it, and do not "just ignore the 401s."
+> (If the site *does* hold subscriptions, keep the enterprise repo and skip
+> the no-subscription file instead — the repo file is the only change.)
+
 # 3c. Full upgrade and reboot. Service-affecting for the node (nothing runs on
 #     it yet — just slow). MANUAL-ONLY in the sense that you watch it finish.
 apt update && apt full-upgrade -y

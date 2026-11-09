@@ -92,6 +92,7 @@ things on purpose.
 ## Layout
 
 - `docs/runbook-starting-point.md` — design decisions, hardware baseline, open questions, section outline
+- `docs/site-profile-flat.md` — how the template instantiates on a flat IP plan (one mgmt /24, per-role data /24s): Ceph addressing variant, PBS host rule, Netris bootstrap, phased bring-up
 - `docs/customer-design-brief.md` (+ `.docx`, `.pdf`) — customer-facing design brief: architecture, specs, protection story
 - `docs/customer-protection-brief.md` — one-page "you are protected" high points
 - `docs/references.md` — curated official documentation links per runbook section

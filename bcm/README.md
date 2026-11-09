@@ -83,7 +83,7 @@ customer sees.
 
 ```bash
 scripts/runbook.py render --out site-docs/
-# 19 docs -> site-docs/, every variable filled in, placeholders flagged
+# 23 docs -> site-docs/, every variable filled in, placeholders flagged
 ```
 
 The template docs are never modified; render writes a fresh directory
@@ -131,25 +131,29 @@ edge cases.
 
 | # | File | What happens |
 |---|---|---|
-| — | `00-overview.md` | How to use this template |
-| — | `00-variables.sh` | **The companyify target** — all site values |
-| 01 | Environment & IP plan | Networks, DNS, inventory — get sign-off first |
-| 02 | BCM head node install | ISO, licensing, upgrades, base config |
-| 03 | Images, categories, nodes | Software images, categories, provisioning, IPMI |
-| 04 | NVIDIA drivers | Driver install/repair inside images |
-| 05 | Kubernetes | `cm-kubernetes-setup`, 14-operator set |
-| 06 | Run:ai | Certs, `cm-runai-setup`, gateway listeners, placement, backups |
-| 07 | Storage | Head-node NFS + CSI driver; **7A** simple / **7B** advanced plans |
-| 08 | Validation | GPU, platform, workload smoke tests |
-| 09 | NIM Operator | NGC secrets, NIMCache, model validation |
-| 10 | Decisions & issues | Deviation log |
-| 11 | Backup, recovery, handoff | Backups, rollback, handoff checklist |
-| 12 | Disk layouts | by-path XMLs per DGX model |
-| 13 | BCM HA (optional) | `cmha-setup` — before 05 |
-| 14 | Greenfield infra | Jumpbox, DNS, Chrony — before 01 |
-| 15 | User management | BCM users from CSV, sudoers, image push |
-| 16 | InfiniBand / GPU fabric | OFED, subnet manager, IPoIB, fabric bandwidth check |
-| 99 | Role mapping | Lab ↔ client ↔ template identifier Rosetta Stone |
+| — | [`00-overview.md`](00-overview.md) | How to use this template |
+| — | [`00a-customer-inputs.md`](00a-customer-inputs.md) | What the site must provide before design closes |
+| — | [`00b-recommended-specs.md`](00b-recommended-specs.md) | Design-time sizing — settled before 01 |
+| — | [`00c-design-decisions.md`](00c-design-decisions.md) | The choices 01's sign-off ratifies |
+| — | [`00d-design-assumptions.md`](00d-design-assumptions.md) | Register of what design takes on faith |
+| — | [`00-variables.sh`](00-variables.sh) | **The companyify target** — all site values |
+| 01 | [Environment & IP plan](01-environment-ip-plan.md) | Networks, DNS, inventory — get sign-off first |
+| 02 | [BCM head node install](02-bcm-headnode-install.md) | ISO, licensing, upgrades, base config |
+| 03 | [Images, categories, nodes](03-images-categories-nodes.md) | Software images, categories, provisioning, IPMI |
+| 04 | [NVIDIA drivers](04-nvidia-drivers.md) | Driver install/repair inside images |
+| 05 | [Kubernetes](05-kubernetes.md) | `cm-kubernetes-setup`, 14-operator set |
+| 06 | [Run:ai](06-runai.md) | Certs, `cm-runai-setup`, gateway listeners, placement, backups |
+| 07 | [Storage](07-storage.md) | Head-node NFS + CSI driver; **7A** simple / **7B** advanced plans |
+| 08 | [Validation](08-validation.md) | GPU, platform, workload smoke tests |
+| 09 | [NIM Operator](09-nim-operator.md) | NGC secrets, NIMCache, model validation |
+| 10 | [Decisions & issues](10-decisions-issues.md) | Deviation log |
+| 11 | [Backup, recovery, handoff](11-backup-recovery-handoff.md) | Backups, rollback, handoff checklist |
+| 12 | [Disk layouts](12-disk-layouts.md) | by-path XMLs per DGX model |
+| 13 | [BCM HA (optional)](13-bcm-ha.md) | `cmha-setup` — before 05 |
+| 14 | [Greenfield infra](14-greenfield-infra.md) | Jumpbox, DNS, Chrony — before 01 |
+| 15 | [User management](15-user-management.md) | BCM users from CSV, sudoers, image push |
+| 16 | [InfiniBand / GPU fabric](16-infiniband.md) | OFED, subnet manager, IPoIB, fabric bandwidth check |
+| 99 | [Role mapping](99-role-mapping.md) | Lab ↔ client ↔ template identifier Rosetta Stone |
 
 Delete `99-role-mapping.md` from an instantiated site copy — it
 documents the merge, not the deployment.

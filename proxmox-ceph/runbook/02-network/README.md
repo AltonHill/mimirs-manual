@@ -90,6 +90,13 @@ only with measured demand.
 
 ## 3. VLAN and bridge layout
 
+> **Flat-layout sites:** if the site's IP plan is one flat mgmt /24 plus
+> one data /24 per role, the Ceph public network is the service VLAN
+> itself (existing bond IPs), and the Ceph cluster network is one added
+> VLAN — or `+100` secondary IPs as a fallback. See
+> [docs/site-profile-flat.md](../../docs/site-profile-flat.md) before
+> renumbering anything below.
+
 | Bridge | Ports | VLAN | Node IP (example) | MTU | Purpose |
 |---|---|---|---|---|---|
 | `vmbr0` | `<MGMT_IF>` | untagged | 10.10.10.11/24, gw 10.10.10.1 | 1500 | Proxmox mgmt, corosync link0, SSH |
@@ -122,6 +129,9 @@ the data-side OOB network over a dedicated VLAN on the 1GbE path:
   Netris VMs → Netris-managed fabric. Netris automates the fabric, but the
   Netris VMs themselves depend on Proxmox being up — never assume the
   fabric is automated before the VMs that automate it exist.
+- **Two switches stay permanently outside Netris management** (record
+  which two in the site copy). They are the cold-start escape hatch: a
+  path to the fabric that never depends on Netris being alive.
 
 ---
 
