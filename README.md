@@ -19,6 +19,19 @@ track alone, but in practice the two land together — the GPU cluster
 and its virtualization under one solution — which is why they live in
 one library.
 
+## Companion tool — DGX Vitals
+
+`dgx-vitals/` is the library's validation runner (family nickname:
+*mimirs-test*). One Python script takes a DGX or HGX node's vitals —
+platform profiles (`--profile dgx|hgx`), NVLink topology, and an NCCL
+suite (all_reduce / all_gather / reduce_scatter with a correctness gate
+and peak bus bandwidth) — on a single node or a whole fleet over SSH,
+and files the evidence: full log, health card, tracker-ready summary.
+It's the behavioral check that complements the tracks' build steps:
+the tracks stand the machines up, Vitals proves they're healthy.
+Source of truth is its own repo (`dgx-vitals`); the copy here is the
+library assembly, refreshed from that repo — see `dgx-vitals/README.md`.
+
 ## How an engagement flows
 
 ![Three workflows, one guarantee](docs/diagrams/workflows.svg)
@@ -95,6 +108,11 @@ Both tracks were built to the same contract, so they line up:
   (`bcm/scripts/runbook.py render`, `proxmox-ceph/scripts/render.py`);
   the Proxmox track also ships a customer-facing design brief
   (`docs/customer-design-brief.{md,docx,pdf}`).
+- **Site profiles** — templates stay generic; a *site profile* records
+  how a real build's constraints bend the pattern (addressing shape,
+  bootstrap workarounds, phased bring-up). Current profile:
+  `proxmox-ceph/docs/site-profile-flat.md` (flat IP plan). New profiles
+  land next to the track they describe.
 
 ## Layout
 
@@ -112,6 +130,11 @@ mimir-manual/
     runbook/           # 00-overview … 07-validation, one dir per section
     scripts/           # preflight.sh, net-verify.sh, backup-drill.sh
     docs/              # design briefs, diagrams, references
+  dgx-vitals/          # companion validation tool (mimirs-test)
+    dgx-vitals.py      # the runner — DGX/HGX profiles, NCCL suite
+    hosts.example.csv  # fleet list template (SSH mode)
+    docs/              # flowchart, sample health card
+    test-stubs/        # stub binaries for offline test runs
 ```
 
 ## Requirements
@@ -120,6 +143,9 @@ mimir-manual/
   only; `cmsh` passes run on the BCM head node as root.
 - **Proxmox track:** Proxmox VE 9.2.x nodes; scripts run on the nodes
   themselves (see each script's header).
+- **DGX Vitals:** Python 3.12, stdlib only; runs on the node itself or
+  from a jump host over SSH (`hosts.csv`); NCCL step needs the
+  `nccl-tests` binaries on the node (see `dgx-vitals/README.md`).
 
 ## Conventions
 

@@ -4,6 +4,38 @@ All notable changes to the template. Dates in America/Chicago.
 
 ## Unreleased
 
+- Front-matter ordering: the four design docs are lettered
+  `00a`–`00d` (customer inputs, recommended specs, design
+  decisions, design assumptions) so file listings put
+  `00-overview.md` first and the design set in reading order —
+  the same convention as the Proxmox/Ceph track's `00a` page.
+  `00-overview.md` and `00-variables.sh` keep their names; the
+  tooling addresses variables by filename.
+
+- Linked TOC: the execution-order table in `00-overview.md` and
+  the sections table in this track's README now link every
+  section file, so the overview navigates the book in Obsidian,
+  on GitHub, and in the rendered site guide alike.
+
+- Design-time front matter grows to a set of four: new
+  `00a-customer-inputs.md` (what the site must provide before
+  design closes — networks and DNS gate 01 outright),
+  `00c-design-decisions.md` (topology, HA layer, scale, control
+  plane, storage and network plans — the choices 01's sign-off
+  ratifies), and `00d-design-assumptions.md` (the register of what
+  design takes on faith; broken assumptions move to section 10
+  citing their register ID). Rendered guide now builds 23 docs.
+
+- New front-matter section 00: recommended specs — the design-time
+  sizing boilerplate, previously carried in engineers' heads only.
+  Filed with the 00 pre-execution material because sizing is settled
+  first, before 01's plan. BCM head node 8 cores / 16 GB / 500 GB+
+  storage (same for VM, baremetal, single, or HA pair; the floor
+  rose from 250 GB as software images grew), Kubernetes control
+  plane 8 or 16 cores / 32 GB, management nodes and CPU workers at
+  the control-plane spec by default, scaled down for single light
+  services (DNS-only, Chrony-only).
+
 ## 0.9.0 — 2026-10-06
 
 - New `render` pass: builds the site-specific MD guide — copies every
