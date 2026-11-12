@@ -132,8 +132,9 @@ mimir-manual/
     docs/              # design briefs, diagrams, references
   dgx-vitals/          # companion validation tool (mimirs-test)
     dgx-vitals.py      # the runner — DGX/HGX profiles, NCCL suite
+    tracker_build.py   # run roots + bundles -> tracker spreadsheet
     hosts.example.csv  # fleet list template (SSH mode)
-    docs/              # flowchart, sample health card
+    docs/              # flowchart, sample health card, screenshots
     test-stubs/        # stub binaries for offline test runs
 ```
 
@@ -146,6 +147,7 @@ mimir-manual/
 - **DGX Vitals:** Python 3.12, stdlib only; runs on the node itself or
   from a jump host over SSH (`hosts.csv`); NCCL step needs the
   `nccl-tests` binaries on the node (see `dgx-vitals/README.md`).
+  `tracker_build.py` additionally needs `openpyxl` and `pillow`.
 
 ## Conventions
 
