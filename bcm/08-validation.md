@@ -57,7 +57,10 @@ Label nodes for workload scheduling:
 
 ```bash
 kubectl get nodes
-kubectl label nodes <node-name> node-role.kubernetes.io/worker=true
+# GPU workers (add CPU-worker hostnames to the list); --overwrite: re-runnable
+for n in $GPU_WORKERS; do
+  kubectl label node "$n" node-role.kubernetes.io/worker=true --overwrite
+done
 ```
 
 - [ ] Every node labeled per its role; GPU nodes carry NVIDIA capacity

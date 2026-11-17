@@ -17,7 +17,7 @@ Source the site variables first:
 
 ```bash
 set -u
-source ../00-overview/variables.sh   # adjust path to your copy
+source ../../site-vars.sh   # site file at the track root — never the template
 ```
 
 Reference: [docs/references.md](../../docs/references.md) — Lenovo (XCC2, OneCLI,
@@ -32,7 +32,7 @@ SR650 V4 product guide), NVIDIA (NVUE, BlueField modes), StorCLI notes.
 2. Confirm airflow: front intake / rear exhaust unobstructed; blanking panels in
    empty RU above/below.
 3. Connect the XCC management port on each node to the mgmt network (SN2201).
-   Set the XCC IPs from `variables.sh` (`NODE*_XCC_IP`) in the XCC web UI or via
+   Set the XCC IPs from `site-vars.sh` (`NODE*_XCC_IP`) in the XCC web UI or via
    BIOS setup — MANUAL-ONLY.
 4. Power on. Verify via XCC that both PSUs report healthy and no critical
    hardware events are logged (XCC → Events).

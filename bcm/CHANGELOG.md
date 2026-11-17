@@ -1,9 +1,17 @@
 # Changelog
 
-All notable changes to the template. Dates in America/Chicago.
+All notable changes to the template.
 
 ## Unreleased
 
+- Anonymization scrub: `99-role-mapping.md` now carries template role
+  names only (role, FQDN pattern, IP); the source-system name columns
+  are gone and the file states its provenance truthfully. The lab is
+  "the lab" throughout; site-specific asides generalized.
+- `check.sh` leak scan rebuilt around a deny-list kept **outside** the
+  repo (path from env `MIMIRS_DENYLIST`, default
+  `~/.config/mimirs-manual/leak-denylist.txt`), scanning the whole repo.
+  A missing or empty deny-list reports NOT RUN and exits 2, never a pass.
 - Front-matter ordering: the four design docs are lettered
   `00a`–`00d` (customer inputs, recommended specs, design
   decisions, design assumptions) so file listings put
@@ -14,7 +22,7 @@ All notable changes to the template. Dates in America/Chicago.
 
 - Linked TOC: the execution-order table in `00-overview.md` and
   the sections table in this track's README now link every
-  section file, so the overview navigates the book in Obsidian,
+  section file, so the overview navigates the book in a Markdown editor,
   on GitHub, and in the rendered site guide alike.
 
 - Design-time front matter grows to a set of four: new
@@ -105,10 +113,10 @@ All notable changes to the template. Dates in America/Chicago.
 
 ## 0.2.0 — 2026-10-05
 
-- First official-document validation sweep; restored the 7 Chaska-only
+- First official-document validation sweep; restored the 7 lab-only
   gaps; 14-operator Kubernetes baseline; 7A/7B storage plans;
   `generate-nodes.py` inventory tooling.
 
 ## 0.1.0 — 2026-10-04
 
-- Initial merge of the Chaska lab runbook with client field corrections.
+- Initial merge of the lab runbook with client field corrections.

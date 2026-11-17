@@ -75,17 +75,65 @@ source ~/.bashrc
 > aliases (`reboot-cp`, `reboot-dgx`, `reboot-all`) and NIM helpers —
 > add them if you want; they aren't required.
 
-Allow MAC-based device resolution, then restart the daemon:
+Allow MAC-based device resolution. The edit is a real command: back up,
+add the setting only if no active `AdvancedConfig` line exists, and
+**never** rewrite an existing one automatically. That line may carry
+other entries; add the value inside its braces by hand.
 
 ```bash
-# In /cm/local/apps/cmd/etc/cmd.conf, after the advanced-config comment:
-#   AdvancedConfig = { "DeviceResolveAnyMAC=1" }
-grep AdvancedConfig /cm/local/apps/cmd/etc/cmd.conf
-systemctl restart cmd
+CMD_CONF=/cm/local/apps/cmd/etc/cmd.conf
+cp -a "$CMD_CONF" "$CMD_CONF.bak-$(date +%F-%H%M%S)"
+if grep -Eq '^[[:space:]]*AdvancedConfig[[:space:]]*=.*"DeviceResolveAnyMAC=1"' "$CMD_CONF"; then
+  echo "NOTE: DeviceResolveAnyMAC=1 already set — nothing to change"
+elif grep -Eq '^[[:space:]]*AdvancedConfig[[:space:]]*=' "$CMD_CONF"; then
+  echo "STOP: an active AdvancedConfig line exists; add \"DeviceResolveAnyMAC=1\" inside its braces by hand:"
+  grep -En '^[[:space:]]*AdvancedConfig' "$CMD_CONF"
+else
+  printf '%s\n' 'AdvancedConfig = { "DeviceResolveAnyMAC=1" }' >> "$CMD_CONF"
+fi
 ```
+
+Verify the **value**, not just the key, and restart only if it holds:
+
+```bash
+CMD_CONF=/cm/local/apps/cmd/etc/cmd.conf
+n=$(grep -Ec '^[[:space:]]*AdvancedConfig[[:space:]]*=' "$CMD_CONF")
+if [ "$n" -eq 1 ] && grep -Eq '^[[:space:]]*AdvancedConfig[[:space:]]*=.*"DeviceResolveAnyMAC=1"' "$CMD_CONF"; then
+  echo "OK: AdvancedConfig carries DeviceResolveAnyMAC=1"
+  systemctl restart cmd && systemctl is-active cmd
+else
+  echo "FAIL: want exactly one active AdvancedConfig line containing \"DeviceResolveAnyMAC=1\" (found $n) — cmd NOT restarted"
+fi
+```
+
+> **[unverified]** The stock `cmd.conf` carries a commented
+> `AdvancedConfig` example. Appending the directive at the end is treated
+> here as equivalent to placing it after that comment. Confirm against
+> the BCM 11 admin manual if CMDaemon doesn't pick it up after the
+> restart.
+
+## 2.5 — Create the BCM networks (01's plan)
+
+The networks pass runs here, after BCM is installed. `cmsh` exists only
+from this point on, so in 01 the pass was dry-run only. `--exec`
+refuses to start if `cmsh` isn't on PATH. The pass is add-or-verify: a
+network that already exists (`internalnet` from the installer, or
+anything from an earlier run) gets a NOTE and is aligned to the plan, so
+re-running it is safe.
+
+```bash
+scripts/runbook.py networks --networks networks.csv --dry-run   # review (from 01)
+scripts/runbook.py networks --networks networks.csv --exec
+cmsh -c "network; list"       # every row of the plan present, values as approved
+```
+
+(No `networks.csv` from 01? Drop `--networks`. The pass then uses the
+stock 4-network plan from `00-variables.sh`.)
 
 ## Verification
 
 - [ ] `cmsh -c "device list"` shows the head node healthy
+- [ ] The value check above printed `OK: AdvancedConfig carries DeviceResolveAnyMAC=1`
+- [ ] `cmsh -c "network; list"` matches 01's approved plan (2.5)
 - [ ] `uname -r` matches `$KERNEL_VER` (or record the actual version and
       update `00-variables.sh` — 03 pins images to it)

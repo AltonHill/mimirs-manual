@@ -1,29 +1,30 @@
 # 99 — Role Mapping & Companyify Guide
 
-## Identifier unification
+## Role naming
 
-Three naming dialects went into this template. This table is the Rosetta
-Stone — every role's template name, and what it was called in each source.
+This template names every machine and service by **role**. The table is
+the canonical role → hostname/FQDN → IP pattern; the IP column shows the
+template defaults from `00-variables.sh`.
 
-| Template role | Template FQDN | Lab (txt) | Client (md) | Notes |
-|---|---|---|---|---|
-| `bcm-headnode` | `bcm-headnode.$DOMAIN` | `node-001` / `acl-bcm-hn01` | `node-005` / `madaib001` | 10.10.15.10 |
-| `k8s-ctrl-1` | `k8s-ctrl-1.$DOMAIN` | `node-006` / `acl-k8s-ctrl1` | `node-006` / `madaik001` | 10.10.15.50 |
-| `k8s-ctrl-2` | `k8s-ctrl-2.$DOMAIN` | `node-007` / `acl-k8s-ctrl2` | `node-007` / `madaik002` | 10.10.15.51 |
-| `k8s-ctrl-3` | `k8s-ctrl-3.$DOMAIN` | `node-008` / `acl-k8s-ctrl3` | `node-008` / `madaik003` | 10.10.15.52 |
-| `gpu-worker-1` | `gpu-worker-1.$DOMAIN` | `node-009` / `acl-k8s-wrk1` | `node-001` / `dc1aiw001` | 10.10.15.53 |
-| `gpu-worker-2` | `gpu-worker-2.$DOMAIN` | `node-010` / `acl-k8s-wrk2` | `node-002` / `dc1aiw002` | 10.10.15.54 |
-| `gpu-worker-3` | `gpu-worker-3.$DOMAIN` | `node-011` / `acl-k8s-wrk3` | `node-003` / `dc1aiw003` | 10.10.15.55 |
-| `gpu-worker-4` | `gpu-worker-4.$DOMAIN` | `node-012` / `acl-k8s-wrk4` | — (client had 3) | lab only |
-| `dgx-a100-1` | `dgx-a100-1.$DOMAIN` | `node-003` / `acl-dgxa100-1` | — | lab only, 10.10.13.200 |
-| `dgx-h200-1` | `dgx-h200-1.$DOMAIN` | `node-005` / `acl-dgxh200-1` | — | lab only, 10.10.13.201 |
-| `kgateway` | `kgateway.$DOMAIN` | `node-015` / `kgateway` | `node-004` | svc IP `$IP_KGATEWAY` |
-| `runai` | `runai.$DOMAIN` | `node-017` / `runai` | `node-010` | svc IP `$IP_RUNAI` |
-| `runai-inference` | `runai-inference.$DOMAIN` | `node-016` / `runai-inference` | `node-009` | svc IP `$IP_INFERENCE` |
+| Template role | Template FQDN | IP (template default) | Notes |
+|---|---|---|---|
+| `bcm-headnode` | `bcm-headnode.$DOMAIN` | `$BCM_HEADNODE_IP` (10.10.15.10) | BCM head node |
+| `k8s-ctrl-1` | `k8s-ctrl-1.$DOMAIN` | 10.10.15.50 | `$K8S_CTRL_IPS` |
+| `k8s-ctrl-2` | `k8s-ctrl-2.$DOMAIN` | 10.10.15.51 | `$K8S_CTRL_IPS` |
+| `k8s-ctrl-3` | `k8s-ctrl-3.$DOMAIN` | 10.10.15.52 | `$K8S_CTRL_IPS` |
+| `gpu-worker-1` | `gpu-worker-1.$DOMAIN` | 10.10.15.53 | `$GPU_WORKER_IPS` |
+| `gpu-worker-2` | `gpu-worker-2.$DOMAIN` | 10.10.15.54 | `$GPU_WORKER_IPS` |
+| `gpu-worker-3` | `gpu-worker-3.$DOMAIN` | 10.10.15.55 | `$GPU_WORKER_IPS` |
+| `gpu-worker-N` | `gpu-worker-N.$DOMAIN` | 10.10.15.53+ | extend `$GPU_WORKERS`/`$GPU_WORKER_IPS` per site |
+| `dgx-a100-1` | `dgx-a100-1.$DOMAIN` | — (site-assigned) | per-type naming example: `dgx-<model>-N` |
+| `dgx-h200-1` | `dgx-h200-1.$DOMAIN` | — (site-assigned) | per-type naming example: `dgx-<model>-N` |
+| `kgateway` | `kgateway.$DOMAIN` | `$IP_KGATEWAY` (10.10.13.200) | service IP (Usernet) |
+| `runai` | `runai.$DOMAIN` | `$IP_RUNAI` (10.10.13.201) | service IP (Usernet) |
+| `runai-inference` | `runai-inference.$DOMAIN` | `$IP_INFERENCE` (10.10.13.202) | service IP (Usernet) |
 
-> The lab numbered `node-001`–`node-017`; the client numbered
-> `node-001`–`node-010` differently. Neither numbering survives here —
-> roles are the identifiers now.
+> **Provenance:** this file carries template names only. Source-system
+> hostnames (lab or client) never enter it, or any other file in this
+> library — roles are the identifiers.
 
 ## Companyify guide (pass 2)
 
@@ -37,8 +38,8 @@ To instantiate this template for a real site:
    (it only appears in `00-variables.sh` defaults and prose).
 4. Regenerate certificates (06.1, 06.3) — SANs embed FQDNs and IPs.
 5. Delete this file (`99-role-mapping.md`) from the instantiated copy —
-   it exists to document the merge, not the deployment.
+   it documents the template's role naming, not the deployment.
 
 To reverse (template → real names for an existing site): the mapping is
-mechanical — replace each `role.$DOMAIN` with the site's FQDN. No
-anonymize-map needed; the template never contained real identifiers.
+mechanical — replace each `role.$DOMAIN` with the site's FQDN. Keep that
+site mapping in the site's own copy, never in this template.

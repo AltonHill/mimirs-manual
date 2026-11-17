@@ -2,7 +2,7 @@
 
 > **What this is:** a merged, executable deployment recipe for a BCM 11 +
 > Kubernetes + NVIDIA Run:ai stack on DGX GPU nodes. It combines the
-> Chaska lab's canonical step-by-step procedure (the prescription) with the
+> lab's canonical step-by-step procedure (the prescription) with the
 > fixes and additions discovered during the client deployment (the
 > description). Every step is copy-pasteable and ordered; every section
 > ends with a verification.
@@ -13,12 +13,12 @@
 > and Cisco UCS GPU nodes: one BCM category + image per node type.
 > NVL72 rack-scale (Vera Rubin, shipping since Sept 2026) is future
 > scope — same provisioning pattern, but rack fabric and liquid cooling
-> are their own design track. The client ran 2× Cisco UCS GPU nodes;
-> the lab ran DGX A100 + DGX H200.
+> are their own design track. Mixed GPU node types in one cluster are
+> covered the same way — one category + image per type.
 >
 > **What this is not:** a copy of either source. Lab and client used
 > different networks, hostnames, and IPs — all unified here under
-> role-based names. See `99-role-mapping.md` for the translation tables.
+> role-based names. See `99-role-mapping.md` for the role naming table.
 
 ## How to use this template
 
@@ -28,6 +28,11 @@
 3. Work sections **01 → 16 in order**. Each section lists its
    prerequisites at the top. (13 is optional HA and runs before 05;
    14 is greenfield infrastructure and runs before 01.)
+   **The named exception, inside 03:** the first node of each host type
+   is provisioned by hand, and its disk layout is collected by-path and
+   verified (03.4), **before** fleet provisioning (03.5). Fleet
+   provisioning is gated on that type's verified XML. 12 is the
+   reference for that step, not a later step.
 4. Every command block is copy-pasteable as written (variables already
    exported). **Verify** each section's checks before moving on.
 
@@ -81,14 +86,24 @@ default — it prints exactly what would run; `--exec` asks for
 confirmation first. New passes get added as the data supports them.
 See `README.md` for the full usage picture.
 
-`99-role-mapping.md` holds the lab→template and client→template identifier
-translations, plus the companyify guide.
+`99-role-mapping.md` holds the template's role → hostname/FQDN → IP
+naming table, plus the companyify guide.
 
 ## Conventions
 
 - `bash` blocks are run on the **BCM head node** unless labeled otherwise.
-- `<PLACEHOLDER>` values must be replaced; UPPER_CASE names in code
-  blocks are variables from `00-variables.sh`.
+- UPPER_CASE names in code blocks are variables from `00-variables.sh`.
+  Executable blocks carry no `<…>` placeholders (`scripts/check.sh`
+  lints them). Per-node values the variables file can't hold are shell
+  variables you set first, and each use is written `${NAME:?…}`, so an
+  unset value stops that command instead of sending a blank. `<…>`
+  appears only in prose and comments.
+- Credentials (`*PASSWORD*`, `*API_KEY*`, `*TOKEN*`, `*SECRET*`,
+  `*PRODUCT_KEY*`, `*LICENSE_KEY*`) stay placeholders in the template and
+  every rendered guide, and come from your shell at run time. Commands
+  that consume one are written `bcm_require_secret NAME && …`.
+- **[unverified]** marks a load-bearing claim not yet checked against
+  vendor docs or hardware; check it before relying on it.
 - **Field notes** (blockquote callouts) mark where the client deployment
   diverged from the lab procedure — read them, don't skip them.
 - Sections 02–06 assume a fresh BCM 11 head node. For brownfield, start
@@ -96,7 +111,7 @@ translations, plus the companyify guide.
 
 ## Source map
 
-- Lab procedure ("Chaska Runbook", 23 sections) → the prescriptive steps.
+- Lab procedure ("Lab Runbook", 23 sections) → the prescriptive steps.
   All 23 are present; the 7 the client docs dropped are restored here and
   marked **[restored]**.
 - Client deployment docs (Wayland-Complete, 18 sources) → fixes,

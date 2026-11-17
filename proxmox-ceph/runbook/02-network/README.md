@@ -9,7 +9,7 @@ at MTU 1500.
 
 ```bash
 set -u
-source ../00-overview/variables.sh   # adjust path to your copy
+source ../../site-vars.sh   # site file at the track root — never the template
 ```
 
 Reference: [docs/references.md](../../docs/references.md) — Proxmox VE Admin Guide
@@ -55,7 +55,7 @@ export MGMT_IF=enp1s0f0       # -> SN2201
 ```
 
 Convention: **P1 → sn5610-a, P2 → sn5610-b** on every node (matches the cabling
-audit rule in 00a §6). Export these before sourcing `variables.sh` in the steps
+audit rule in 00a §6). Export these before sourcing `site-vars.sh` in the steps
 below — the config generator refuses to run until they are set.
 
 ---
@@ -138,12 +138,12 @@ the data-side OOB network over a dedicated VLAN on the 1GbE path:
 ## 4. Generate and apply `/etc/network/interfaces` (per node)
 
 Run on **each** node with its `NODE_NUM` (1, 2, 3) and the §1 exports in place.
-The script below sources `variables.sh`, so all IPs/MTUs/VLANs come from the
+The script below sources `site-vars.sh`, so all IPs/MTUs/VLANs come from the
 single source of truth.
 
 ```bash
 set -u
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 : "${NODE_NUM:?set NODE_NUM=1|2|3 for this node}"
 cerberus_require_vars BF3_P1 BF3_P2 MGMT_IF \
   NODE1_MGMT_IP NODE2_MGMT_IP NODE3_MGMT_IP MGMT_GW \
@@ -159,7 +159,7 @@ eval CLUSTER_IP="\$NODE${NODE_NUM}_CLUSTER_IP"
 cp -a /etc/network/interfaces "/root/interfaces.bak.$(date +%F-%H%M%S)"
 
 cat > /etc/network/interfaces <<EOF
-# Cerberus node-${NODE_NUM} — generated from variables.sh. Do not hand-edit;
+# Cerberus node-${NODE_NUM} — generated from site-vars.sh. Do not hand-edit;
 # re-run the generator in runbook/02-network instead.
 auto lo
 iface lo inet loopback
@@ -334,14 +334,14 @@ either leave the firewall off until §07 validation, or add the allows above fir
 ## Node-4 callout
 
 Repeat §1 (discover its interface names) and §4 with `NODE_NUM=4`
-(`.14` addresses from `variables.sh`). Its P1/P2 follow the same
+(`.14` addresses from `site-vars.sh`). Its P1/P2 follow the same
 switch-A/switch-B rule; the §5 failover drill applies unchanged.
 
 ## 02 acceptance checklist
 
 - [ ] `<BF3_P1>`/`<BF3_P2>`/`<MGMT_IF>` resolved and recorded per node (§1)
 - [ ] SN5610 breakout legs trunk VLANs 100+200 tagged (§3)
-- [ ] `/etc/network/interfaces` generated from `variables.sh` on all nodes; backup kept (§4)
+- [ ] `/etc/network/interfaces` generated from `site-vars.sh` on all nodes; backup kept (§4)
 - [ ] `ifreload -a` applied; bond0 active-backup up, active slave = P1 (§5)
 - [ ] 200000Mb/s on both BF3 ports, 1000Mb/s mgmt, MTUs 9000/9000/1500 (§5)
 - [ ] Cross-node ping clean on mgmt/public/cluster; MTU-9000 ping clean on both VLANs (§5)

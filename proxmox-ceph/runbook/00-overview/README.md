@@ -52,7 +52,7 @@ the runbook needs adaptation first.
 8. **Dedicated PBS host** (separate physical machine, reachable on the mgmt
    network). Proxmox docs explicitly caution against installing PBS on the
    hypervisor nodes themselves.
-9. **No DDN storage** anywhere in the design — not spec'd, not quoted, not plumbed.
+9. **No external storage arrays** anywhere in the design — none spec'd, none plumbed in.
 10. **No vendor integration kit** (no EveryScale): the builder racks and cables
     baremetal, so this runbook owns the full physical bring-up verification (00a).
 11. **Corosync link0 on the 1GbE management network** (physically separate NIC from
@@ -61,7 +61,8 @@ the runbook needs adaptation first.
     fence agents; the supported equivalent on this hardware is the IPMI hardware
     watchdog configured inside each host (05).
 13. **Customer-anonymized throughout.** Role-based names only; site values live in
-    `variables.sh`, never hardcoded in steps.
+    `site-vars.sh` (a copy of this directory's `variables.sh` template), never
+    hardcoded in steps.
 14. **Built for lab reuse** as well as customer builds.
 
 ### Explicitly NOT covered
@@ -83,7 +84,7 @@ the runbook needs adaptation first.
 | ceph-cluster | 200 | `10.20.30.0/24` | 9000 | same bond0 (VLAN sub-if) → SN5610-A/B | OSD replication / recovery / backfill / heartbeat |
 | fabric underlay | — | — | 9216 | OSFP-800G → 4×200G breakout DACs | switch-side jumbo headroom (Cumulus default) |
 
-Per-node IP plan (placeholders — resolve in `variables.sh`):
+Per-node IP plan (template defaults — resolve in `site-vars.sh`):
 
 | Node | mgmt | ceph-public (.100) | ceph-cluster (.200) | XCC |
 |---|---|---|---|---|
@@ -99,20 +100,32 @@ SN5610 is spare.
 
 ## Variables
 
-**`variables.sh`** (this directory) is the single source of truth for every site
-value. All later sections source it:
+**`variables.sh`** (this directory) is the pristine **template** for every site
+value — never edit it in place. Copy it to the track root as `site-vars.sh`,
+fill that in, and every later section sources the site file:
 
 ```bash
+cp runbook/00-overview/variables.sh site-vars.sh   # once, from the track root
 set -u
-source ./variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 ```
+
+The node scripts follow the same convention: `--vars <path>`, else
+`site-vars.sh` at the track root, else they stop (they never fall back to the
+template).
 
 Conventions:
 
-- Every value has a `PLACEHOLDER` default (or is intentionally empty for
-  host-resolved values like the BlueField-3 kernel interface names).
-- `cerberus_require_vars VAR...` fails fast if a variable is still a placeholder.
-- `cerberus_audit_placeholders` lists everything still needing a site value.
+- Every value has a template default. Only a few are the literal `PLACEHOLDER`;
+  the networks and IPs are plausible-looking example addresses, which is why
+  the audit compares against the template rather than looking for a string.
+  The host-resolved BlueField-3 / OCP interface names are intentionally
+  undefined.
+- `cerberus_require_vars VAR...` fails fast if a variable is unset, empty or
+  still `PLACEHOLDER`.
+- `cerberus_audit_placeholders` lists everything still `PLACEHOLDER` or empty,
+  every audited value (networks, gateways, IPs, PBS host, DNS, NTP) still
+  identical to the template default, and any host-resolved name not yet exported.
 - Host-specific values (`BF3_P1`, `BF3_P2`, `MGMT_IF`) are resolved per node in
   02-network §1 and exported before sourcing.
 

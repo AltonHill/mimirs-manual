@@ -12,7 +12,7 @@
 | Cluster identity: DNS domain, cluster name, organization name | 00-variables, 01 | Design close |
 | Network allocations: CIDRs and gateways for the provisioning, storage, user, and OOB networks | 01 | **01 sign-off gate** |
 | DNS and time: upstream DNS servers, control of the cluster's DNS zone, Chrony/NTP sources | 01, 14 | **01 sign-off gate** |
-| Kubernetes ranges: service and pod CIDRs | 05 | Design close |
+| Kubernetes ranges: service and pod CIDRs — **verified against the customer's existing networks** (every range the nodes or pods must reach: site, VPN, other sites and clusters), not just this plan | 00-variables, 05 | Design close |
 | Node inventory: hostname, MAC, and BMC address for every node | 03 (inventory CSV) | Before provisioning |
 | BMC access: reachability from the head node, credentials as placeholder names | 03 (IPMI) | Before provisioning |
 | BCM entitlement key (NVIDIA licensing portal → Base Command Manager) | 02 | Before install day |
@@ -27,6 +27,16 @@
 
 - Send it at kickoff, not at install. Every row is cheaper to
   produce during design than to discover mid-build.
+- Ask the Kubernetes-ranges question out loud: "Do `10.96.0.0/16`
+  (services) and `10.244.0.0/16` (pods) collide with anything you
+  route today, or plan to?" The template defaults are clear of this
+  plan's own networks, and `scripts/runbook.py vars` and
+  `scripts/check.sh` both fail if they ever overlap them — but neither
+  the defaults nor the check can see the
+  customer's existing estate. A collision there is rare, but it only
+  shows up after workloads land, and the fix is a Kubernetes
+  redeploy. Record the answer; a range nobody verified is an entry in
+  `00d-design-assumptions.md`.
 - Mark each row received in the site copy as it lands; an unmarked
   row at design close becomes an entry in
   `00d-design-assumptions.md` — the build proceeds on faith, and

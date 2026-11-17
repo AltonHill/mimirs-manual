@@ -23,9 +23,12 @@ hardware baseline, and original open questions are preserved in
 ```bash
 # 1. Companyify: copy the variables file per site, fill in every value
 cp runbook/00-overview/variables.sh site-vars.sh
-nvim site-vars.sh          # replace every PLACEHOLDER
+nvim site-vars.sh          # replace every PLACEHOLDER *and* every template default
 
-# 2. Validate the track
+# 2. Validate the track — currently RED (exit 1): the doc-block bash -n and
+#    placeholder-lint stages fail on known <placeholder>-in-command content
+#    in the runbook docs; every hit is listed. Until the gate is green, the
+#    blocks it names are not paste-safe as written.
 scripts/check.sh
 
 # 3. Render the site-specific guide (see below), then follow it 00 -> 07
@@ -45,15 +48,15 @@ scripts/render.py --vars site-vars.sh --out client-docs/
 **2. Team review, then build:**
 ```bash
 scripts/render.py --vars site-vars.sh --out review-docs/   # team reviews this
-# ...after sign-off, on the nodes:
-scripts/preflight.sh
+# ...after sign-off, on the nodes (preflight runs after 01, before 03):
+scripts/preflight.sh       # reads site-vars.sh at the track root, or --vars <path>
 # ...then follow runbook/ 00 -> 07
 ```
 
 **3. Build first, document after** (the favorite):
 ```bash
-# on the nodes, just build it:
-scripts/preflight.sh
+# on the nodes, just build it (preflight runs after 01, before 03):
+scripts/preflight.sh       # reads site-vars.sh at the track root, or --vars <path>
 # ...follow runbook/ 00 -> 07...
 # ...when the build is done, the deliverable:
 scripts/render.py --vars site-vars.sh --out final-docs/
@@ -64,18 +67,30 @@ It's a final deliverable — the first and last thing the customer sees.
 
 The template docs are never modified; render writes a fresh directory every
 time. The template stays pristine — the site's truth lives in your
-`site-vars.sh`. Only variables defined in `variables.sh` are substituted;
-shell loop variables inside the docs (e.g. `${NODE_NUM}`, set per-node at
-deploy time) are left untouched. Anything still `PLACEHOLDER` or empty is
-reported, not hidden.
+`site-vars.sh`. Only variables defined in `variables.sh` are substituted,
+and never with an empty string; shell loop variables inside the docs (e.g.
+`${NODE_NUM}`, set per-node at deploy time) and the host-resolved interface
+names (`BF3_P1`, `BF3_P2`, `MGMT_IF`, undefined in the template on purpose)
+are left untouched. The render report lists what still needs attention:
+values still literally `PLACEHOLDER`; names defined but empty (passed through
+as `$VAR`, never blanked); and every audited value — networks, gateways,
+IPs, the PBS host, DNS, NTP — still identical to the template's shipped
+default. It reports; it does not stop the render. `cerberus_audit_placeholders`
+(defined in the variables file) runs the same audit in a node shell.
+
+The node scripts (`preflight.sh`, `net-verify.sh`, `backup-drill.sh`) take
+`--vars <path>` like `render.py`; without it they read `site-vars.sh` at the
+track root, and if neither exists they stop. They never fall back to the
+template's defaults. The runbook sections source the same file
+(`source ../../site-vars.sh` from inside `runbook/NN-*/`).
 
 ## Section workflow
 
 ![Proxmox-Ceph track — section workflow](../docs/diagrams/cerberus-workflow.svg)
 
 Follow the sections 00 → 07 in order (00a physical bring-up first on
-baremetal). The scripts guard each stage: `preflight.sh` before the
-install, `net-verify.sh` after the network build, `backup-drill.sh`
+baremetal). The scripts guard each stage: `preflight.sh` after the 01
+install and before Ceph (03), `net-verify.sh` after the network build, `backup-drill.sh`
 around the PBS work — and `render.py` turns the whole thing into the
 site's deliverable.
 
@@ -100,12 +115,14 @@ things on purpose.
 - `runbook/` — the full step-by-step (one directory per section)
 - `scripts/` — idempotent, guarded automation (preflight checks, `--dry-run`, confirmations);
   `render.py` builds the site-specific Markdown guide, `check.sh` is the validation gate
+  (currently red on known placeholder-in-command doc content — see Quickstart step 2)
 
 ## Conventions
 
 - **Customer-anonymized:** role-based node names (`node-1`, `node-2`, `node-3`), no customer
   identifiers anywhere, credentials as placeholders.
-- **Variables-first:** per-site values go in `runbook/00-overview/variables.sh`; everything
+- **Variables-first:** per-site values go in `site-vars.sh` (a copy of the pristine
+  template `runbook/00-overview/variables.sh`, kept at the track root); everything
   else is copy-paste.
 - **Baremetal-up:** no vendor integration kit assumed — the runbook owns physical bring-up
   verification (section `00a`) through final validation.

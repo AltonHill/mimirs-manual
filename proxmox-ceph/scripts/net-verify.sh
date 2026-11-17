@@ -13,26 +13,59 @@
 #   3. Optional: iperf3 bandwidth sanity on the 200G fabric (auto-skipped
 #      if iperf3 is missing on either end; disable with --no-iperf3)
 #
-# Usage: bash scripts/net-verify.sh [--dry-run] [--no-iperf3]
+# Usage: bash scripts/net-verify.sh [--vars <path>] [--dry-run] [--no-iperf3]
 #   --dry-run:    print what would be tested, run nothing.
 #   --no-iperf3: skip the optional bandwidth test.
+#   --vars <path>: the site variables file (same convention as render.py).
+#              Default: <track>/site-vars.sh. If neither exists, the script
+#              exits 2 — it never sources the template variables.
 # Exit code: 0 if all pass; non-zero with a clear message on failure.
 # =====================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../runbook/00-overview/variables.sh
-source "$SCRIPT_DIR/../runbook/00-overview/variables.sh"
 
 DRY_RUN=0
 WITH_IPERF3=1
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    --no-iperf3) WITH_IPERF3=0 ;;
-    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+VARS_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-iperf3) WITH_IPERF3=0; shift ;;
+    --vars) [ $# -ge 2 ] || { echo "--vars needs a path" >&2; exit 2; }; VARS_FILE="$2"; shift 2 ;;
+    --vars=*) VARS_FILE="${1#--vars=}"; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# --- site variables (fail closed: never the template) ---------------------
+# Convention shared with render.py: --vars <path> names the site file;
+# without it, <track>/site-vars.sh is used. If neither exists the script
+# stops — it never falls back to runbook/00-overview/variables.sh, whose
+# defaults would make every result meaningless.
+TRACK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_VARS="$TRACK_DIR/runbook/00-overview/variables.sh"
+if [ -z "$VARS_FILE" ]; then
+  VARS_FILE="$TRACK_DIR/site-vars.sh"
+  if [ ! -f "$VARS_FILE" ]; then
+    echo "FATAL: no site variables file. Pass --vars <path>, or create the default:" >&2
+    echo "         cp $TEMPLATE_VARS $TRACK_DIR/site-vars.sh   # then fill in the site's values" >&2
+    echo "       Refusing to run against the template defaults." >&2
+    exit 2
+  fi
+fi
+if [ ! -f "$VARS_FILE" ]; then
+  echo "FATAL: --vars file not found: $VARS_FILE" >&2
+  exit 2
+fi
+if [ "$(realpath "$VARS_FILE")" = "$(realpath "$TEMPLATE_VARS")" ]; then
+  echo "FATAL: $VARS_FILE is the pristine template, not a site file." >&2
+  echo "       Copy it to $TRACK_DIR/site-vars.sh, fill it in, and pass that." >&2
+  exit 2
+fi
+echo "site variables: $VARS_FILE"
+# shellcheck source=/dev/null
+source "$VARS_FILE"
 
 NODES=("$NODE1_HOSTNAME" "$NODE2_HOSTNAME" "$NODE3_HOSTNAME")
 PUBLIC_IPS=("$NODE1_PUBLIC_IP" "$NODE2_PUBLIC_IP" "$NODE3_PUBLIC_IP")

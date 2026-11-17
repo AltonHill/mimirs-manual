@@ -3,47 +3,84 @@
 # Cerberus — scripts/preflight.sh
 #
 # READ-ONLY pre-flight check. Run LOCALLY on each node (node-1/2/3)
-# before installing PVE / initializing Ceph.
+# AFTER the 01 install (PVE is on the node) and BEFORE 03 (Ceph init).
+# That is the only window where every check below can pass: check [1]
+# expects PVE to be installed already, check [8] expects Ceph not to be.
 #
 # Verifies:
-#   1. PVE 9.x installed (pve-manager major version)
+#   1. PVE 9.x installed (pve-manager major version) — expected, since
+#      this runs after 01
 #   2. DNS resolves the peer node hostnames
 #   3. NTP synchronized
 #   4. >=2 interfaces at 200G link speed present (BlueField-3 ports)
 #   5. MTU 9000 on the 200G interfaces (WARN only at this stage —
 #      §02 sets final MTU on bond0/VLANs; net-verify.sh tests it for real)
-#   6. >=2 NVMe devices visible via /dev/disk/by-id (the OSD drives)
+#   6. >=2 distinct NVMe devices (the OSD drives) — by-id symlinks are
+#      resolved to their device and de-duplicated; partitions don't count
 #   7. storcli: NO virtual drives on the 940-8i (JBOD/raw, never HW RAID)
-#   8. Ceph NOT yet initialized (this is pre-build)
+#   8. Ceph NOT yet initialized (this runs before 03)
 #
-# Usage: bash scripts/preflight.sh [--dry-run]
+# Usage: bash scripts/preflight.sh [--vars <path>] [--dry-run]
 #   --dry-run: print what would be checked, run nothing.
+#   --vars <path>: the site variables file (same convention as render.py).
+#              Default: <track>/site-vars.sh. If neither exists, the script
+#              exits 2 — it never sources the template variables.
 # Exit code: 0 if all pass, non-zero with a clear message on failure.
 # =====================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../runbook/00-overview/variables.sh
-source "$SCRIPT_DIR/../runbook/00-overview/variables.sh"
 
 DRY_RUN=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+VARS_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --vars) [ $# -ge 2 ] || { echo "--vars needs a path" >&2; exit 2; }; VARS_FILE="$2"; shift 2 ;;
+    --vars=*) VARS_FILE="${1#--vars=}"; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# --- site variables (fail closed: never the template) ---------------------
+# Convention shared with render.py: --vars <path> names the site file;
+# without it, <track>/site-vars.sh is used. If neither exists the script
+# stops — it never falls back to runbook/00-overview/variables.sh, whose
+# defaults would make every result meaningless.
+TRACK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_VARS="$TRACK_DIR/runbook/00-overview/variables.sh"
+if [ -z "$VARS_FILE" ]; then
+  VARS_FILE="$TRACK_DIR/site-vars.sh"
+  if [ ! -f "$VARS_FILE" ]; then
+    echo "FATAL: no site variables file. Pass --vars <path>, or create the default:" >&2
+    echo "         cp $TEMPLATE_VARS $TRACK_DIR/site-vars.sh   # then fill in the site's values" >&2
+    echo "       Refusing to run against the template defaults." >&2
+    exit 2
+  fi
+fi
+if [ ! -f "$VARS_FILE" ]; then
+  echo "FATAL: --vars file not found: $VARS_FILE" >&2
+  exit 2
+fi
+if [ "$(realpath "$VARS_FILE")" = "$(realpath "$TEMPLATE_VARS")" ]; then
+  echo "FATAL: $VARS_FILE is the pristine template, not a site file." >&2
+  echo "       Copy it to $TRACK_DIR/site-vars.sh, fill it in, and pass that." >&2
+  exit 2
+fi
+echo "site variables: $VARS_FILE"
+# shellcheck source=/dev/null
+source "$VARS_FILE"
 
 NODES=("$NODE1_HOSTNAME" "$NODE2_HOSTNAME" "$NODE3_HOSTNAME")
 
 echo "=== Cerberus preflight (read-only) on $(hostname) ==="
 echo "This script makes NO changes. It will check:"
-echo "  [1] PVE version is 9.x"
+echo "  [1] PVE 9.x is installed (expected — preflight runs after 01, before 03)"
 echo "  [2] DNS resolves peer nodes: ${NODES[*]}"
 echo "  [3] System clock is NTP-synchronized"
 echo "  [4] At least 2 interfaces at 200G link speed (BlueField-3 ports)"
 echo "  [5] MTU ${CEPH_PUBLIC_MTU} on the 200G interfaces (WARN if not yet set)"
-echo "  [6] At least 2 NVMe devices in /dev/disk/by-id (the OSD drives)"
+echo "  [6] At least 2 distinct NVMe devices (the OSD drives)"
 echo "  [7] storcli: no virtual drives (JBOD only)"
 echo "  [8] Ceph is NOT initialized on this host"
 echo ""
@@ -67,7 +104,7 @@ if command -v pveversion >/dev/null 2>&1; then
     fail "[1] pve-manager major version '$PVE_MAJOR' is not 9 — reinstall/upgrade before proceeding."
   fi
 else
-  fail "[1] 'pveversion' not found — Proxmox VE does not appear to be installed on this host."
+  fail "[1] 'pveversion' not found — preflight runs AFTER the 01 install (and before 03); install PVE per runbook/01-cluster-install first."
 fi
 
 # --- [2] DNS -----------------------------------------------------------
@@ -117,13 +154,38 @@ for iface in "${FAST_IFACES[@]}"; do
 done
 
 # --- [6] NVMe OSD drives -------------------------------------------------
-NVME_COUNT="$(ls /dev/disk/by-id/ 2>/dev/null | grep -c '^nvme-' || true)"
+# Each drive has SEVERAL by-id entries (eui.*, model_serial, _1 namespace
+# aliases, -partN), so counting entries passes a single drive. Resolve
+# every nvme-* symlink to its device, drop partitions, de-duplicate.
+NVME_DEVS=()
+while IFS= read -r dev; do
+  [ -n "$dev" ] && NVME_DEVS+=("$dev")
+done < <(
+  for l in /dev/disk/by-id/nvme-*; do
+    [ -e "$l" ] || continue
+    d="$(readlink -f "$l")"
+    case "$d" in
+      /dev/nvme*n*p*) continue ;;   # partition, not a device
+      /dev/nvme*n*) echo "$d" ;;
+    esac
+  done | sort -u
+)
+NVME_COUNT="${#NVME_DEVS[@]}"
 if [ "$NVME_COUNT" -ge 2 ]; then
-  pass "[6] Found $NVME_COUNT NVMe device(s) in /dev/disk/by-id (BOM: 2 OSD drives/node):"
-  ls /dev/disk/by-id/ | grep '^nvme-' | sed 's/^/        /'
+  pass "[6] Found $NVME_COUNT distinct NVMe device(s) (BOM: 2 OSD drives/node):"
+  for d in "${NVME_DEVS[@]}"; do
+    echo "        $d  $(lsblk -dno MODEL,SIZE "$d" 2>/dev/null | tr -s ' ' || true)"
+  done
 else
-  fail "[6] Expected >=2 NVMe devices in /dev/disk/by-id, found $NVME_COUNT — check backplane cabling (direct-to-CPU x4, NOT behind the 940-8i)."
+  fail "[6] Expected >=2 distinct NVMe devices, found $NVME_COUNT — check backplane cabling (direct-to-CPU x4, NOT behind the 940-8i)."
 fi
+# Advisory: a device with partitions or holders is in use (e.g. the boot
+# volume, if it presents as NVMe) or needs wiping before 03.
+for d in "${NVME_DEVS[@]}"; do
+  if [ "$(lsblk -nro NAME "$d" 2>/dev/null | wc -l)" -gt 1 ]; then
+    warn "[6] $d has partitions/holders — not a blank OSD candidate (boot volume, or wipe before 03)."
+  fi
+done
 
 # --- [7] storcli: no virtual drives --------------------------------------
 if command -v storcli >/dev/null 2>&1; then
@@ -140,11 +202,11 @@ fi
 
 # --- [8] Ceph not initialized --------------------------------------------
 if [ -f /etc/ceph/ceph.conf ]; then
-  fail "[8] /etc/ceph/ceph.conf exists — Ceph appears initialized. Preflight is for pre-build hosts."
+  fail "[8] /etc/ceph/ceph.conf exists — Ceph appears initialized. Preflight runs before 03."
 elif ceph -s >/dev/null 2>&1; then
-  fail "[8] 'ceph -s' succeeded — Ceph appears initialized. Preflight is for pre-build hosts."
+  fail "[8] 'ceph -s' succeeded — Ceph appears initialized. Preflight runs before 03."
 else
-  pass "[8] Ceph not initialized (expected pre-build)"
+  pass "[8] Ceph not initialized (expected before 03)"
 fi
 
 echo ""

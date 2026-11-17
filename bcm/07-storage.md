@@ -30,6 +30,23 @@ Keep logical paths consistent (e.g. `/shared/...`) so researchers can
 move between HPC and AI environments without relearning paths. The exact
 NFS export names may differ from the logical mount paths.
 
+**The exports, canonically:** the StorageClasses point at exports
+derived from the variables, on `$NFS_SERVER`: `$NFS_SHARE` for 7A, and
+`$NFS_SHARE/data`, `$NFS_SHARE/scratch`, `$NFS_SHARE/models` for 7B (the
+template's `/data` gives `/data/data` and so on). The manual YAML below
+and `scripts/runbook.py storage` produce **the same** classes, exports,
+and default-class outcome. The `/shared/...` names above are logical
+mount paths, not export names. If the site's exports are laid out
+differently, change `NFS_SHARE` (or the pass), not one path's YAML.
+
+> **Writing the YAML files from this page:** they carry `$NFS_SERVER` /
+> `$NFS_SHARE`. The rendered guide has them filled in. From the
+> unrendered template, either use `scripts/runbook.py storage`, which
+> generates the same YAML from the variables, or let the shell expand
+> them (`envsubst < nfs-sc.yaml > nfs-sc.rendered.yaml`). kubectl never
+> expands variables. Each apply below refuses a file that still contains
+> a literal `$NFS_SERVER` or `$NFS_SHARE`.
+
 ## 7.1 — Head-node NFS mount
 
 ```bash
@@ -51,8 +68,9 @@ mount -a && df -h $NFS_MOUNT
 > runs the driver install below. `--dry-run` prints everything first.
 
 ```bash
-helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
+# re-runnable: upgrade --install converges an existing release
+helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts --force-update
+helm upgrade --install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
   --namespace kube-system --version $NFS_CSI_VERSION \
   --set externalSnapshotter.enabled=true \
   --set controller.runOnControlPlane=true
@@ -87,8 +105,8 @@ metadata:
     storageclass.kubernetes.io/is-default-class: "true"
 provisioner: nfs.csi.k8s.io
 parameters:
-  server: 10.10.12.250
-  share: /data
+  server: $NFS_SERVER
+  share: $NFS_SHARE
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -98,15 +116,23 @@ mountOptions:
 ```
 
 ```bash
-kubectl apply -f nfs-sc.yaml
+grep -q '[$]NFS_' nfs-sc.yaml && echo "STOP: nfs-sc.yaml has unexpanded variables" || kubectl apply -f nfs-sc.yaml
 kubectl get storageclass
 kubectl describe storageclass nfs-csi
 ```
 
-Make it the default (replacing `local-path`):
+Make it the only default (replacing `local-path`, if the cluster has it).
+`runbook.py storage --plan 7a` runs these same two steps:
 
 ```bash
-kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+kubectl get storageclass local-path >/dev/null 2>&1 \
+  && kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' \
+  || echo 'NOTE: no local-path StorageClass — nothing to un-default'
+# verify: exactly one default, and it is nfs-csi
+test "$(kubectl get storageclass --no-headers | grep -c '(default)')" -eq 1 \
+  && kubectl get storageclass --no-headers | grep '(default)' | grep -q '^nfs-csi ' \
+  && echo 'OK: exactly one default StorageClass (nfs-csi)' \
+  || { echo 'FAIL: default StorageClass is not exactly nfs-csi'; kubectl get storageclass; }
 ```
 
 Validate end to end:
@@ -143,8 +169,8 @@ metadata:
   name: nfs-data
 provisioner: nfs.csi.k8s.io
 parameters:
-  server: 10.10.12.250
-  share: /shared/data
+  server: $NFS_SERVER
+  share: $NFS_SHARE/data
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -159,8 +185,8 @@ metadata:
   name: nfs-scratch
 provisioner: nfs.csi.k8s.io
 parameters:
-  server: 10.10.12.250
-  share: /shared/scratch
+  server: $NFS_SERVER
+  share: $NFS_SHARE/scratch
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -175,8 +201,8 @@ metadata:
   name: nfs-models
 provisioner: nfs.csi.k8s.io
 parameters:
-  server: 10.10.12.250
-  share: /shared/models
+  server: $NFS_SERVER
+  share: $NFS_SHARE/models
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
@@ -186,9 +212,14 @@ mountOptions:
 ```
 
 ```bash
-kubectl apply -f nfs-data.yaml -f nfs-scratch.yaml -f nfs-models.yaml
+grep -q '[$]NFS_' nfs-data.yaml nfs-scratch.yaml nfs-models.yaml \
+  && echo "STOP: unexpanded variables in the 7B YAML" \
+  || kubectl apply -f nfs-data.yaml -f nfs-scratch.yaml -f nfs-models.yaml
 kubectl get storageclass
 ```
+
+7B sets no default class: neither this page nor `runbook.py storage
+--plan 7b` changes which StorageClass is the default.
 
 Static PV for pre-existing project data (no provisioning — it already exists):
 
@@ -212,14 +243,14 @@ spec:
     driver: nfs.csi.k8s.io
     volumeHandle: project-existing
     volumeAttributes:
-      server: 10.10.12.250
-      share: /shared/proj
+      server: $NFS_SERVER
+      share: /shared/proj   # pre-existing export — the site's real path
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: project
-  namespace: runai-ngs
+  namespace: <project-namespace>
 spec:
   accessModes:
     - ReadOnlyMany

@@ -13,13 +13,16 @@
 | `usernet` | `$NET_USER` | `user.cluster` | `$GW_USER` | User/service access (MetalLB, ingress) |
 | `mgmtnet` | `$NET_OOB` | `oobnet.cluster` | `$GW_OOB` | Hardware/BMC management |
 
-> **Field note [client]:** the client ran segmented as above. The Chaska lab
+> **Field note [client]:** the client ran segmented as above. The lab
 > ran flat — everything on `10.10.13.0/24` (`internalnet`), with mgmt on
 > `.15` and IPMI on `.12`. Either works; segmented is the template default.
 >
 > **Automate it:** once the table above is approved,
-> `scripts/runbook.py networks` creates/aligns the networks
-> (`--dry-run` first, always). The pass is data-driven: copy
+> `scripts/runbook.py networks` creates/aligns the networks. **In 01 it
+> is dry-run only.** That review needs nothing but Python, and BCM isn't
+> installed yet. The pass runs for real (`--exec`) in **02.5**, after
+> the head node install, because `cmsh` doesn't exist before then. The
+> pass is add-or-verify, so re-running it is safe. It is data-driven: copy
 > `scripts/networks-template.csv` to `networks.csv` and add rows for
 > extra fabrics (GPU east-west Ethernet/InfiniBand, IPMI, ...) — no code
 > changes needed. Without `--networks`, the pass uses the stock
@@ -28,7 +31,8 @@
 ```bash
 cp scripts/networks-template.csv networks.csv
 # edit networks.csv: uncomment/add rows per site
-scripts/runbook.py networks --networks networks.csv --dry-run
+scripts/runbook.py networks --networks networks.csv --dry-run   # review only — --exec is 02.5
+scripts/runbook.py vars   # its CIDR guard also checks networks.csv (beside the variables file) against the K8s ranges
 ```
 
 ## DNS
@@ -63,11 +67,11 @@ Required forward + reverse records (generate from your plan):
 | `k8s-ctrl-3` | `10.10.15.52` | | Control plane |
 | `gpu-worker-1..N` | `10.10.15.53+` | BMC on `$NET_OOB` | DGX nodes (B300) |
 
-> **Field note [client]:** the client used 3× H200 workers
-> (`10.10.15.53-55`). The lab used 4 VM workers +
-> 1× DGX A100 + 1× DGX H200 (see `99-role-mapping.md` for the historical
-> hostnames). Size `$GPU_WORKERS`/`$GPU_WORKER_IPS` to the
-> site — for the B300 rollout this table grows to 74 nodes.
+> **Sizing:** the template defaults to three GPU workers
+> (`10.10.15.53-55`); the same table covers DGX, HGX OEM, and Cisco UCS
+> GPU workers, mixed types included (one category + image per type —
+> see `03`; `99-role-mapping.md` has the role naming pattern). Size
+> `$GPU_WORKERS`/`$GPU_WORKER_IPS` to the site — one row per GPU node.
 
 ## Service IPs (Usernet)
 

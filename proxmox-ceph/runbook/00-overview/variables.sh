@@ -4,21 +4,30 @@
 # ============================================================================
 #
 # HOW TO USE
-#   1. Copy this file per site/deployment and replace every PLACEHOLDER value
-#      with the site's real values. Keep this file out of version control if
-#      it contains sensitive site data (or keep placeholders and inject at
-#      deploy time — pick one and be consistent).
-#   2. Later sections source it:
+#   1. This file is the pristine TEMPLATE — never edit it in place. Copy it
+#      to the track root as site-vars.sh and fill in the site's real values
+#      there (every default below — networks and IPs included — is a
+#      template value, not just the ones marked PLACEHOLDER):
+#         cp runbook/00-overview/variables.sh site-vars.sh
+#      Keep site-vars.sh out of version control if it contains sensitive
+#      site data.
+#   2. Later sections and the node scripts source the SITE file:
 #         set -u
-#         source /path/to/variables.sh
-#   3. Anything still set to PLACEHOLDER (or empty, for host-resolved values)
-#      MUST be resolved before running the steps that consume it.
+#         source ../../site-vars.sh          # from inside runbook/NN-*/
+#         scripts/net-verify.sh [--vars <path>]   # default: <track>/site-vars.sh
+#      The scripts fail closed if no site file is given or found — they
+#      never fall back to this template.
+#   3. Anything still PLACEHOLDER, or still identical to a template default
+#      (cerberus_audit_placeholders reports both), MUST be resolved before
+#      running the steps that consume it.
 #
 # CONVENTIONS
 #   - Node names are customer-anonymized role names: node-1 / node-2 / node-3.
 #     The optional 4th node reuses the same scheme (node-4, .14 suffixes).
 #   - ${VAR:-default} form everywhere, so `set -u` sourcing never trips on
 #     an unset variable. Export overrides from the environment win.
+#     Exception: the host-resolved interface names (below) are deliberately
+#     left undefined — under `set -u`, using one before it is exported fails.
 #   - Networks below are PLACEHOLDER defaults from the design doc; change the
 #     CIDR and every derived IP moves with it.
 #
@@ -97,11 +106,13 @@ MGMT_SWITCH="${MGMT_SWITCH:-sn2201-mgmt}"
 # are host-specific. Resolve them in runbook/02-network §1 (PCI -> kernel
 # mapping + physical port identification), then export BEFORE sourcing:
 #     export BF3_P1=enp134s0f0np0 BF3_P2=enp134s0f1np0 MGMT_IF=enp1s0f0
-# Left empty on purpose: the runbook refuses to generate network config until
-# these are set (see the guard in 02-network).
-BF3_P1="${BF3_P1:-}"
-BF3_P2="${BF3_P2:-}"
-MGMT_IF="${MGMT_IF:-}"
+# HOST-RESOLVED — INTENTIONALLY UNDEFINED. BF3_P1, BF3_P2 and MGMT_IF are
+# deliberately NOT assigned in this file (not even as empty defaults): they
+# stay undefined until discovered on the node and exported there. That keeps
+# them out of render.py's substitution set, so the rendered guide carries
+# ${BF3_P1} etc. through untouched, and the 02-network guard
+# (cerberus_require_vars) refuses to generate config until they are set.
+# Do not add defaults for them here or in a site copy.
 
 # ------------------------------------------------------------- core services
 DNS_SERVERS="${DNS_SERVERS:-10.10.10.2}"       # PLACEHOLDER, space-separated if several
@@ -138,17 +149,58 @@ cerberus_require_vars() {
     [ "$missing" -eq 0 ]
 }
 
-# Print every variable still holding a PLACEHOLDER or empty default.
+# Audit the loaded values against the PRISTINE TEMPLATE's shipped defaults.
+# The template's defaults are plausible-looking addresses, not the string
+# PLACEHOLDER, so a literal-string test passes a site file nobody edited.
+# Reports:
+#   - anything still PLACEHOLDER or empty;
+#   - every audited value (networks, gateways, IPs, PBS host, DNS, NTP)
+#     still identical to its template default;
+#   - the host-resolved names (must be exported per node).
+# Template path: $CERBERUS_TEMPLATE, else found relative to this file
+# (works from the template itself or from <track>/site-vars.sh).
+# Returns non-zero if anything was reported.
 cerberus_audit_placeholders() {
-    echo "--- variables still needing site values ---"
-    compgen -v | grep -E '^(NODE|MGMT|CEPH|FABRIC|SWITCH|PBS|DNS|NTP|MAILTO|DOMAIN|CLUSTER|POOL|HA)' | sort | while read -r v; do
+    local here tmpl v val dflt found=0
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    tmpl="${CERBERUS_TEMPLATE:-}"
+    if [ -z "$tmpl" ]; then
+        for tmpl in "$here/runbook/00-overview/variables.sh" "$here/variables.sh" \
+                    "$here/../runbook/00-overview/variables.sh"; do
+            [ -f "$tmpl" ] && break
+        done
+    fi
+    if [ ! -f "$tmpl" ]; then
+        echo "FATAL: pristine template not found (set CERBERUS_TEMPLATE) — cannot audit against defaults" >&2
+        return 2
+    fi
+    echo "--- variables still PLACEHOLDER or empty ---"
+    while read -r v; do
         val="${!v:-}"
         case "$val" in
-            ""|PLACEHOLDER) printf '%-22s %s\n' "$v" "${val:-(empty)}" ;;
+            ""|PLACEHOLDER) printf '%-22s %s\n' "$v" "${val:-(empty)}"; found=1 ;;
         esac
+    done < <(compgen -v | grep -E '^(NODE|MGMT|CEPH|FABRIC|SWITCH|PBS|DNS|NTP|MAILTO|DOMAIN|CLUSTER|POOL|HA)' | sort)
+    echo "--- audited values still identical to the template default ($tmpl) ---"
+    # Template defaults: source the template in a clean environment so no
+    # exported override masks a default.
+    while IFS='=' read -r v dflt; do
+        val="${!v:-}"
+        if [ -n "$val" ] && [ "$val" = "$dflt" ]; then
+            printf '%-22s %s\n' "$v" "$val"; found=1
+        fi
+    done < <(env -i bash --noprofile --norc -c '
+        source "$1" >/dev/null 2>&1 || exit 2
+        compgen -v | grep -E "(_NET|_GW|_IP|_IPS)\$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS)\$" \
+          | grep -vE "^(BASH|COMP|HOST|MACH|OS|PPID|UID|EUID)" | sort \
+          | while read -r n; do printf "%s=%s\n" "$n" "${!n}"; done' _ "$tmpl")
+    echo "--- host-resolved (must be exported per node; undefined in the template) ---"
+    for v in BF3_P1 BF3_P2 MGMT_IF; do
+        if [ -n "${!v:-}" ]; then
+            printf '%-22s %s\n' "$v" "${!v}"
+        else
+            printf '%-22s %s\n' "$v" "(not set — see 02-network §1)"; found=1
+        fi
     done
-    echo "--- host-resolved (must be exported per node) ---"
-    printf '%-22s %s\n' "BF3_P1" "${BF3_P1:-(empty — see 02-network §1)}"
-    printf '%-22s %s\n' "BF3_P2" "${BF3_P2:-(empty — see 02-network §1)}"
-    printf '%-22s %s\n' "MGMT_IF" "${MGMT_IF:-(empty — see 02-network §1)}"
+    [ "$found" -eq 0 ]
 }

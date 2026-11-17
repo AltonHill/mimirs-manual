@@ -1,10 +1,10 @@
 # B300 Deployment Runbook — Template
 
 > An executable deployment recipe for BCM 11 + Kubernetes + NVIDIA Run:ai
-> on DGX GPU nodes — the Chaska lab's canonical procedure, merged with the
+> on DGX GPU nodes — the lab's canonical procedure, merged with the
 > fixes discovered in the field, automation included.
 
-`version 0.9.0` · `scripts/check.sh` passing · Python 3.12 stdlib-only · anonymous by design
+`version 0.9.0` · `scripts/check.sh` green (publisher mode: exit 0 with the out-of-repo leak deny-list; without it the leak stage is NOT RUN and the gate exits 2) · `scripts/check.sh --site` green (every stage but the leak scan; exit 0/1) · Python 3.12 stdlib-only · anonymous by design
 
 ## Quickstart
 
@@ -13,8 +13,9 @@
 nvim 00-variables.sh && source 00-variables.sh
 
 # 2. Validate before anything else
-scripts/runbook.py vars                                  # fails on unfilled placeholders
-scripts/check.sh                                         # full template validation
+scripts/runbook.py vars          # fails: unfilled placeholders, K8s CIDR overlap · reports: shipped defaults still in place
+scripts/check.sh --site          # on site: every stage except the leak scan (exit 0 pass / 1 fail)
+# scripts/check.sh               # publisher: every stage incl. the leak scan (needs the out-of-repo deny-list; exit 2 without it)
 
 # 3. Run the deployment as composable passes (dry-run first, always)
 scripts/runbook.py networks --dry-run
@@ -34,13 +35,20 @@ scripts/runbook.py nodes --inventory inventory.csv --dry-run
    ends with verification checkboxes. (13 is optional HA and runs before
    05; 14 is greenfield infra and runs before 01.)
 5. Every `bash` block is copy-pasteable once the variables are sourced.
-   `<PLACEHOLDER>` values must be replaced; `UPPER_CASE` names come from
-   `00-variables.sh`.
+   Executable blocks carry no `<…>` placeholders (`check.sh` lints both
+   upper- and lower-case ones). `UPPER_CASE` names come from
+   `00-variables.sh`. Per-node values the file can't hold (a node's MAC,
+   a discovered pod name) are shell variables you set first, and each
+   use is written `${NAME:?…}`, so an unset value stops that command.
+   Credentials are consumed as `bcm_require_secret NAME && …`.
 
 ## Automation: the pass framework
 
 The end goal is one small, reviewable, re-runnable pass per runbook
 section — each driven by data files instead of hand-typed commands.
+**Re-runnable means add-or-verify:** a pass checks whether each object
+exists, creates it only if it's absent, and aligns it either way. An
+"already exists" is success-with-note, never an abort.
 `--dry-run` is the default and prints exactly what would run; `--exec`
 asks for confirmation first. Passes run on the BCM head node as root.
 
@@ -50,22 +58,23 @@ asks for confirmation first. Passes run on the BCM head node as root.
 00-variables.sh ──┬──▶ runbook.py vars         validate the variables file
                   ├──▶ runbook.py networks    01 · create/align BCM networks
                   ├──▶ runbook.py images      03 · categories + software images
-inventory.csv ────▶├──▶ runbook.py nodes       03 · provision nodes from CSV
-disk-layouts/ ────▶├──▶ runbook.py disklayouts 12 · disk XML → category
+disk-layouts/ ────▶├──▶ runbook.py disklayouts 03.4 · by-path XML → node, then category
+inventory.csv ────▶├──▶ runbook.py nodes       03.5 · fleet gate (layoutgate), then provision from CSV
                   ├──▶ runbook.py storage     07 · NFS CSI driver + StorageClasses
 accounts.csv ─────▶└──▶ runbook.py users       15 · BCM users + sudoers drop-in
 ```
 
 | Pass | Runbook | Input | Does |
 |---|---|---|---|
-| `vars` | 00 | `00-variables.sh` | Fails if any placeholder is unfilled |
-| `networks` | 01 | variables or `networks.csv` | Creates/aligns BCM networks — **data-driven**: add rows to `networks.csv` (GPU east-west, IB, IPMI) with no code changes; `--networks` selects the file, otherwise the stock 4-network plan from variables |
+| `vars` | 00 | `00-variables.sh` (+ `networks.csv` beside it, or `--networks`) | **Fails** on a missing required variable, an unfilled `<…>` placeholder, or a Kubernetes CIDR guard failure (the same guard as `check.sh`). **Reports, never fails:** every audited value still identical to the shipped template's default (`DOMAIN`, `CLIENT_ORG`, `NFS_SERVER`, `KERNEL_VER`, `BMC_USER`, every network/gateway/DNS/admin range, node and service IPs, the K8s ranges) — confirm each is really the site's. Credential-class names (`*PASSWORD*`, `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PRODUCT_KEY*`, `*LICENSE_KEY*`) are excluded by policy from both: they stay placeholders and are reported as an excluded count. On the pristine template it exits 0 with the audit listing all 27 audited values |
+| `networks` | 01 / 02.5 | variables or `networks.csv` | Creates/aligns BCM networks — **data-driven**: add rows to `networks.csv` (GPU east-west, IB, IPMI) with no code changes; `--networks` selects the file, otherwise the stock 4-network plan from variables. Dry-run in 01; `--exec` in 02.5 (refuses without `cmsh`) |
 | `images` | 03 | variables | Creates categories, clones images (picks `dgx-image` vs `default-image` from `GPU_NODE_TYPE`), assigns images to categories |
-| `nodes` | 03 | inventory CSV | Validates, then provisions every node |
-| `disklayouts` | 12 | `disk-layouts/<type>-by-path.xml` | Applies the layout at category level; stops with the collection procedure if the XML isn't built yet (it needs live hardware) |
-| `storage` | 07 | variables | Installs the NFS CSI driver, generates + applies StorageClasses (`--plan 7a`: one default class; `--plan 7b`: data/scratch/models) |
-| `users` | 15 | accounts CSV | Creates BCM users (minimal `cmsh` form — extra switches cause OpenLDAP weirdness); `--sudoers` emits the sudoers drop-in |
-| `render` | — | variables | Builds the site-specific MD guide: copies every doc, substitutes every variable (skips `99-role-mapping.md`, warns on unfilled placeholders) |
+| `disklayouts` | 03.4 (ref. 12) | `disk-layouts/<type>-by-path.xml` | Validates the XML (by-path only — refuses kernel names and by-id/uuid), applies it to the collection node (`--node`) or the category; stops with the collection procedure if the XML isn't built yet (it needs live hardware). `--type`/`--category` cover every host type. Logged override for a host type where by-path fails in the installer: `--allow-non-by-path --reason "…"` (loud warning every time, one line appended to `disk-layouts/OVERRIDES.log`; 03.4) |
+| `layoutgate` | 03.4 | `--category`, `--device` (repeatable) | The fleet gate on its own, read-only: refuses unless each named category's `disksetup` in BCM — and each named device's device-level `disksetup`, where one is set — is by-path only; a category with no layout is a refusal. Honors the same override |
+| `nodes` | 03.5 | inventory CSV | Validates (refuses an unfilled skeleton), then — under `--exec`, before anything is asked or run — applies the 03.4 fleet gate to every category in the inventory and to every existing node's device-level layout, and refuses unless each is by-path; then provisions every node. The generated `provision-nodes.sh` repeats the gate before its first `add`. Honors the same override |
+| `storage` | 07 | variables | Installs/upgrades the NFS CSI driver, generates + applies StorageClasses on the variables-derived exports (`--plan 7a`: one default class, local-path un-defaulted, exactly-one-default verified; `--plan 7b`: data/scratch/models) |
+| `users` | 15 | accounts CSV + passwords file | Creates BCM users (minimal `cmsh` form — extra switches cause OpenLDAP weirdness); refuses placeholder passwords; passwords reach `cmsh` on stdin, never argv; `--sudoers` emits the sudoers drop-in |
+| `render` | — | variables | Builds the site-specific MD guide: copies every doc and substitutes the variables, **except credential-class names, which stay `$BMC_PASSWORD`-style references**. Warns loudly (names only) if a credential holds a real value. Skips `99-role-mapping.md`, warns on unfilled placeholders |
 
 ### The three workflows
 
@@ -83,7 +92,8 @@ customer sees.
 
 ```bash
 scripts/runbook.py render --out site-docs/
-# 23 docs -> site-docs/, every variable filled in, placeholders flagged
+# 23 docs -> site-docs/, every non-credential variable filled in, placeholders flagged;
+# credentials stay as $BMC_PASSWORD-style references (warns loudly if one holds a real value)
 ```
 
 The template docs are never modified; render writes a fresh directory
@@ -153,10 +163,10 @@ edge cases.
 | 14 | [Greenfield infra](14-greenfield-infra.md) | Jumpbox, DNS, Chrony — before 01 |
 | 15 | [User management](15-user-management.md) | BCM users from CSV, sudoers, image push |
 | 16 | [InfiniBand / GPU fabric](16-infiniband.md) | OFED, subnet manager, IPoIB, fabric bandwidth check |
-| 99 | [Role mapping](99-role-mapping.md) | Lab ↔ client ↔ template identifier Rosetta Stone |
+| 99 | [Role mapping](99-role-mapping.md) | Role → hostname/FQDN → IP naming pattern |
 
 Delete `99-role-mapping.md` from an instantiated site copy — it
-documents the merge, not the deployment.
+documents the template's role naming, not the deployment.
 
 ## Scripts
 
@@ -174,7 +184,7 @@ you can build in a spreadsheet and export.
 ## Anonymizer pack (optional)
 
 `anonymizer-pack.tar.gz` (separate download) is the companion tool for
-scrubbing a *source* bundle — raw client docs, Obsidian exports — before
+scrubbing a *source* bundle — raw client docs, the bundle export — before
 they leave your laptop. Four passes, stdlib-only, no network, no LLM:
 
 1. **Client names** → stand-in (`--replacement`, default `Wayland Megacorp`)
@@ -187,14 +197,30 @@ survived. Always `--dry-run` first.
 
 ```bash
 tar -xzf anonymizer-pack.tar.gz && cd anonymizer-pack
-./anonymize.py --client "Acme Widgets" --domains "acme.com" --scan ~/obsidian/bcm-bundle | nvim -
-./anonymize.py --client "Acme Widgets" --domains "acme.com" --dry-run ~/obsidian/bcm-bundle | nvim -
-./anonymize.py --client "Acme Widgets" --domains "acme.com" --out ~/bcm-bundle-anon ~/obsidian/bcm-bundle
+BUNDLE_DIR=/path/to/source-bundle   # the bundle export to scrub
+./anonymize.py --client "Acme Widgets" --domains "acme.com" --scan "$BUNDLE_DIR" | nvim -
+./anonymize.py --client "Acme Widgets" --domains "acme.com" --dry-run "$BUNDLE_DIR" | nvim -
+./anonymize.py --client "Acme Widgets" --domains "acme.com" --out "$BUNDLE_DIR-anon" "$BUNDLE_DIR"
 ```
 
 Use `--client-file names.txt` (one per line) so real customer names never
-land in shell history. This template itself was scrubbed with it — the
-`check.sh` leak scan is the ongoing guard.
+land in shell history.
+
+### Leak scan (`check.sh`)
+
+The ongoing guard is the `check.sh` leak scan. It reads a **deny-list
+kept outside the repo** — path from the `MIMIRS_DENYLIST` environment
+variable, default `~/.config/mimirs-manual/leak-denylist.txt` — so the
+library never ships the identifiers it hunts. One pattern per line (Python regex, matched
+case-insensitively); blank lines and full-line `#` comments are ignored.
+It scans the **whole repo** (both tracks, docs, READMEs, the companion;
+`.git` excluded), including the text and metadata inside `.docx` files
+and the metadata of the `.pdf`; it lists the files it can only partly
+see (PDF body text, images). A deny-list that is missing or has no
+patterns makes the stage report **NOT RUN** and `check.sh` exit 2 —
+never a pass. Untracked site files sitting in the tree (an
+`inventory.csv`, say) are scanned too, so run it on a clean copy. Git
+history is not scanned.
 
 ## Requirements
 
@@ -211,4 +237,9 @@ land in shell history. This template itself was scrubbed with it — the
 - Field notes (`> **Field note**`) mark where the client deployment
   diverged from the lab procedure — read them.
 - `[restored]` marks lab procedures the client docs had dropped.
-- Credentials are always placeholders — never commit real values.
+- Credentials are always placeholders in the template and every
+  deliverable, never real values. Credential class: `*PASSWORD*`,
+  `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PRODUCT_KEY*`, `*LICENSE_KEY*`.
+  `render` never substitutes them (the guide keeps the `$BMC_PASSWORD`-style reference), and it
+  warns loudly if one holds a real value. The operator's shell supplies
+  them at run time (`read -rs NAME; export NAME`).

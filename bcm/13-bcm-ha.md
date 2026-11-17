@@ -23,12 +23,12 @@
 ## 13.2 — Procedure
 
 ```bash
-# 1. Verify head-node power control over the cluster nodes:
-cmsh -c "device ; power -c <gpu-category> status"
+# 1. Verify head-node power control over the cluster nodes, every category:
+for c in $CAT_CP $CAT_WRK $CAT_GPU; do cmsh -c "device ; power -c $c status"; done
 
-# 2. Power OFF all cluster nodes (required before HA config):
-cmsh -c "device ; power -c <gpu-category> off"
-# repeat for each node category
+# 2. Power OFF all cluster nodes (required before HA config) — every
+#    category (add any extra GPU-type categories to the list):
+for c in $CAT_CP $CAT_WRK $CAT_GPU; do cmsh -c "device ; power -c $c off"; done
 
 # 3. On the primary head node as root:
 cmha-setup

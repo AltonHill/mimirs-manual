@@ -14,12 +14,12 @@ Deploy Ceph Tentacle on the three hyperconverged nodes: install, initialize, MON
 > August 2026 cautionary runbook: ~16 stranded staging subvolumes, ~76 GiB,
 > undercounted from a single cluster's PVs).
 
-**Variables** — defined in [00-overview/variables.sh](../00-overview/variables.sh); **do not redefine them here**, source the file first:
+**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**, source the site file first:
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 # Expected names: CEPH_PUBLIC_NET, CEPH_CLUSTER_NET
-# Placeholders if variables.sh is not yet populated:
+# Placeholders if site-vars.sh is not yet populated:
 #   CEPH_PUBLIC_NET="<ceph-public-CIDR, e.g. 10.20.30.0/24>"
 #   CEPH_CLUSTER_NET="<ceph-cluster-CIDR, e.g. 10.20.31.0/24>"
 ```
@@ -32,7 +32,7 @@ All `pveceph` steps below run as `root`. Steps marked "each node" must be execut
 
 - §01 cluster join and §02 network are complete: the Ceph public and cluster networks are up on every node, MTU 9000 verified end-to-end.
 - §00a physical bring-up has **confirmed the PM1743s are wired direct-to-CPU (x4)** and do NOT appear in `storcli /c0/pall`. If any NVMe shows up under StorCLI, stop — recable before continuing.
-- **Flat-layout sites:** the public network may be the pre-existing service/data VLAN (the nodes' bond IPs) and the cluster network one added VLAN — see [docs/site-profile-flat.md](../../docs/site-profile-flat.md). `pveceph init` takes both forms unchanged; what matters is that `CEPH_PUBLIC_NET` / `CEPH_CLUSTER_NET` in `variables.sh` describe what §02 actually built.
+- **Flat-layout sites:** the public network may be the pre-existing service/data VLAN (the nodes' bond IPs) and the cluster network one added VLAN — see [docs/site-profile-flat.md](../../docs/site-profile-flat.md). `pveceph init` takes both forms unchanged; what matters is that `CEPH_PUBLIC_NET` / `CEPH_CLUSTER_NET` in `site-vars.sh` describe what §02 actually built.
 
 ---
 

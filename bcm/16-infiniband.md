@@ -77,15 +77,16 @@ If `gpu-ib` carries IP traffic, each GPU node needs an `ib0` interface
 on that network:
 
 ```bash
-cmsh -c "device; use <gpu-node>; interfaces; add physical ib0 gpu-ib; set ip <ip>; commit"
+# per GPU node: NODE and NODE_IB_IP from your 01 plan
+cmsh -c "device; use ${NODE:?set NODE to the GPU node}; interfaces; add physical ib0 gpu-ib; set ip ${NODE_IB_IP:?set NODE_IB_IP to its ib0 address}; commit"
 ```
 
 Validate:
 
 ```bash
-PEER_IB_IP="<peer-ib-ip>"   # peer node's ib0 address, from your 01 plan
+# PEER_IB_IP: the peer node's ib0 address, from your 01 plan
 ip -br addr show ib0
-ping -c3 "$PEER_IB_IP"
+ping -c3 "${PEER_IB_IP:?set PEER_IB_IP to the peer ib0 address}"
 ```
 
 ## 16.5 — Fabric bandwidth check
@@ -93,11 +94,11 @@ ping -c3 "$PEER_IB_IP"
 Between two GPU nodes (validates the full path, not just link state):
 
 ```bash
-NODE_A_IB_IP="<node-a-ib-ip>"   # node A's ib0 address, from your 01 plan
+# NODE_A_IB_IP: node A's ib0 address, from your 01 plan
 # node A (server):
 ib_write_bw -d mlx5_0
 # node B (client):
-ib_write_bw -d mlx5_0 "$NODE_A_IB_IP"
+ib_write_bw -d mlx5_0 "${NODE_A_IB_IP:?set NODE_A_IB_IP to node A ib0 address}"
 # expect: ~line rate for the HCA generation
 ```
 

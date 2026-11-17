@@ -4,13 +4,13 @@ Proxmox HA on the three nodes: hardware watchdog fencing FIRST, then HA rules (n
 
 > **READ THIS FIRST — the fencing model.** Proxmox HA has **no external fence agents**. There is no IPMI/STONITH/ipmilan integration in Proxmox, and there never has been (the old "Fencing" menu in the GUI is a display-only remnant). Fencing is **watchdog self-fencing**: if a node stops behaving, its own watchdog timer expires and the node power-cycles itself. Anyone expecting traditional external fencing must understand this up front — it changes what "fenced" means and how fast it happens. On Lenovo hardware the correct path is the **IPMI hardware watchdog**, configured below. The Lenovo XCC **cannot** be used as an external fence agent — no such configuration exists in Proxmox; the IPMI watchdog is the supported equivalent.
 
-**Variables** — defined in [00-overview/variables.sh](../00-overview/variables.sh); **do not redefine them here**, source the file first:
+**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**, source the site file first:
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 # Expected names: HA_RULE_NAME (e.g. "production"),
 #                 HA_PROTECTED_VMS (e.g. "vm:100,vm:101")
-# Placeholders if variables.sh is not yet populated:
+# Placeholders if site-vars.sh is not yet populated:
 #   HA_RULE_NAME="production"
 #   HA_PROTECTED_VMS="vm:100,vm:101"
 ```

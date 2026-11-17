@@ -10,7 +10,7 @@
 | A1 | Air-cooled DGX (A, H, B series) are interchangeable for this pattern; OEM HGX nodes follow it with their own category + image | NVL72-class rack-scale systems break the pattern — rack fabric and liquid cooling become their own design track | Design review |
 | A2 | A Proxmox substrate with HA is available to host the head-node VM | Topology decision reopens: baremetal, or BCM HA with its quorum and replication overhead | Design close |
 | A3 | The head node can serve NFS over the provisioning network unless the site provides storage | Storage plan (07) changes shape, and possibly the network plan with it | 01 sign-off |
-| A4 | Disk-layout XMLs can be finalized during the build | They cannot be written from a desk — 12's collection step needs live hardware, so layouts land later than the paper design | 03, 12 |
+| A4 | Disk-layout XMLs can be finalized during the build | They cannot be written from a desk — 03.4's collection step (one node per host type, before the fleet; reference: 12) needs live hardware, so layouts land later than the paper design and gate fleet provisioning | 03, 12 |
 | A5 | Network allocations handed over at design time are final | Renumbering after 01 sign-off invalidates certificates, DNS, and installer configs downstream | 01 gate |
 | A6 | BCM, NGC, and Run:ai entitlements are procured before install day | The schedule slips; the design does not change | Kickoff |
 

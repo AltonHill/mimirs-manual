@@ -74,12 +74,16 @@ less proxmox-ceph/README.md   # virtualization / Ceph
 
 # 2. Companyify: fill in the one variables file per track
 nvim bcm/00-variables.sh && source bcm/00-variables.sh
-# or: nvim proxmox-ceph/runbook/00-overview/variables.sh
+# or (Cerberus keeps its template pristine — copy it to the site file):
+#   cp proxmox-ceph/runbook/00-overview/variables.sh proxmox-ceph/site-vars.sh
+#   nvim proxmox-ceph/site-vars.sh
 
 # 3. Validate, then run the track's automation (dry-run first, always)
-bcm/scripts/runbook.py vars
-bcm/scripts/check.sh
-bash proxmox-ceph/scripts/check.sh
+bcm/scripts/runbook.py vars          # fails on placeholders + K8s CIDR overlap; reports shipped defaults
+bcm/scripts/check.sh --site          # on site: every stage but the leak scan — green = exit 0
+# bcm/scripts/check.sh               # publisher mode: + leak scan (out-of-repo deny-list; exit 2 without it)
+bash proxmox-ceph/scripts/check.sh   # currently RED (exit 1): known placeholder-in-command
+                                     # content in the runbook docs — see proxmox-ceph/README.md
 bash proxmox-ceph/scripts/preflight.sh --dry-run
 
 # 4. Render the site-specific guide — always built, it's a final deliverable
@@ -96,14 +100,23 @@ Both tracks were built to the same contract, so they line up:
   placeholders. The anonymizer pack (see `bcm/README.md`) scrubs source
   bundles before they leave your laptop.
 - **Variables-first** — one file per site holds every site value
-  (`bcm/00-variables.sh`, `proxmox-ceph/runbook/00-overview/variables.sh`).
+  (`bcm/00-variables.sh`; for Cerberus, `proxmox-ceph/site-vars.sh`, copied
+  from the pristine template `proxmox-ceph/runbook/00-overview/variables.sh`).
   Everything else is copy-pasteable as written.
 - **Dry-run scripts** — automation prints what it would do before doing
   it (`--dry-run` default; `--exec` asks for confirmation). Nothing
   runs blind.
 - **Validate everything** — `bcm/scripts/check.sh` (bash/YAML/Python/
-  variable sanity/leak scan/pass smoke tests); Cerberus scripts are
-  idempotent with `--dry-run` and confirmation prompts.
+  placeholder lint/disksetup by-path guard/CIDR guard/variable sanity/
+  leak scan/pass smoke tests) is **green**. Two modes: the default
+  *publisher* mode runs every stage and exits 2 (never green) without
+  the out-of-repo leak deny-list; `--site` runs every stage except the
+  leak scan, so a teammate on site gets a meaningful 0/1.
+  `proxmox-ceph/scripts/check.sh` is **red** today. It fails on known
+  `<placeholder>`-in-command content in the Cerberus runbook docs (its
+  doc-block `bash -n` and placeholder-lint stages list every hit). Until
+  it is green, treat the blocks it names as not paste-safe. Cerberus
+  scripts are idempotent with `--dry-run` and confirmation prompts.
 - **Docs are deliverables** — each track renders its site-specific MD guide
   (`bcm/scripts/runbook.py render`, `proxmox-ceph/scripts/render.py`);
   the Proxmox track also ships a customer-facing design brief
@@ -124,7 +137,7 @@ mimir-manual/
     README.md          # track guide (quickstart, pass framework, sections)
     00-overview.md … 16-infiniband.md, 99-role-mapping.md
     00-variables.sh    # the companyify target
-    scripts/           # runbook.py (8 passes), generators, check.sh
+    scripts/           # runbook.py (8 passes + layoutgate), generators, check.sh
   proxmox-ceph/        # Proxmox VE + Ceph track (Cerberus)
     README.md          # track guide
     runbook/           # 00-overview … 07-validation, one dir per section

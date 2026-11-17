@@ -8,8 +8,9 @@ real values in `variables.sh`.*
 
 ## The shape
 
-- **Management /24 is shared by everything** and will run hot: PDUs
-  alone can take 150+ addresses. Inventory the free pockets before
+- **Management /24 is shared by everything** and will run hot: dense
+  power and BMC gear (metered PDUs especially) can consume most of the
+  range on their own. Inventory the free pockets before
   assigning anything new (PBS host, monitoring) — there is no room to
   improvise later.
 - **Gateways sit at `.254`** in every subnet. Follow the site convention;
@@ -58,8 +59,9 @@ as corosync's second link.
   runs through Netris-managed switches, a cold start has a circular
   dependency. The two unmanaged switches are the escape hatch.
 - Controllers run **active-active across hosts** — do not pin the
-  controller set to a single host (a stale "one host only" note in a
-  site spreadsheet is a known artifact; the design intent is anywhere).
+  controller set to a single host. If site documentation says
+  otherwise, confirm it against the design intent (anywhere) before
+  following it.
 - Bring-up order: physical mgmt links → Proxmox → Netris VMs →
   Netris-managed fabric (also §02-network 3b).
 
@@ -73,9 +75,11 @@ once. Sections 00a/01 carry the ordering notes.
 
 ## Storage note
 
-The site may have DDN gear racked and addressed — for this tier it is
-**off-limits** (see Locked design decisions). Ceph on local NVMe is the
-storage story; do not design dependencies on the DDN VLAN.
+A site network may already carry high-end storage arrays (for example
+a parallel-filesystem appliance serving the GPU side). For this tier
+they are **off-limits** (see Locked design decisions): Ceph on local
+NVMe is the storage story; design no dependencies on any external
+array or its VLAN.
 
 ## GPU side (cross-reference)
 

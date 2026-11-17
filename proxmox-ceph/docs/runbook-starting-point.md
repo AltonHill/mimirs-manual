@@ -8,10 +8,10 @@ _Drafted 2026-10-07. Customer-anonymized throughout (role-based names only). Ful
 - **3 nodes** (4th possible, still being decided) — the minimum for a self-healing Ceph quorum (3 MONs, one per node; the cluster tolerates one node down).
 - **Internal NVMe OSDs** — Ceph runs on drives physically inside the nodes; no external storage appliance in the data path.
 - **Synchronous replication** — writes replicate synchronously across nodes (target size=3/min_size=2, to be confirmed in the full runbook); no async or external tiering.
-- **DDN off-limits** — DDN storage is excluded from the design; not to be spec'd, quoted, or plumbed in.
+- **External storage arrays off-limits** — any high-end storage array on the site network is excluded from the design; not to be spec'd or plumbed in.
 - **Proxmox Backup Server planned** — PBS is part of the design from the start for backup/restore, not an afterthought (dedicated host vs. VM, datastore sizing TBD).
 
-## Hardware (from BOM, 2026-10-07)
+## Hardware (from the BOM)
 
 Per node — ThinkSystem SR650 V4:
 - 2x Intel Xeon 6527P (24C, 3.0GHz, 255W) → 48C/96T per node
@@ -34,7 +34,7 @@ Cluster (3 nodes): 144C/288T, 3TB RAM, 23.04TB raw NVMe → ~7.68TB usable at si
 
 **Still open:**
 1. **Backplane cabling** — are the U.3 NVMe wired direct-to-CPU (x4), or behind the 940-8i (x1 ≈ 2GB/s per drive vs ~14GB/s direct)? Must verify; JBOD, never HW RAID.
-2. **200G cabling (call-out, Loki says cables are covered)** — per node 2× 200G into the SN5610s via OSFP-800G → 4× QSFP112-200G breakout DACs (in-rack; 2 DACs cover 3 nodes, exactly 2 cover 4 nodes); land each node's two links on different SN5610s. Cross-rack → breakout AOCs or SM optics. Plus 2–4× Cat6 per node for OCP 1GbE → SN2201 (BOM ships 1/server).
+2. **200G cabling (call-out, cables are covered)** — per node 2× 200G into the SN5610s via OSFP-800G → 4× QSFP112-200G breakout DACs (in-rack; 2 DACs cover 3 nodes, exactly 2 cover 4 nodes); land each node's two links on different SN5610s. Cross-rack → breakout AOCs or SM optics. Plus 2–4× Cat6 per node for OCP 1GbE → SN2201 (BOM ships 1/server).
 3. **3 vs 4 nodes** — now purely quorum/capacity (network is a non-issue with the SN5610 fabric). 3 is the quorum sweet spot; 4th adds capacity, no quorum benefit (MONs stay at 3).
 4. **Network topology** — which 2 of the 3 SN5610s carry the Proxmox storage fabric (3rd = AI fabric or spare?); corosync placement (1GbE OCP vs VLAN on the 200G fabric); bonding/MLAG design.
 5. **Ceph cluster network separation** — dedicated replication/cluster network, or shared with client/frontend traffic? (2× 200G/node gives room either way.)
@@ -42,12 +42,12 @@ Cluster (3 nodes): 144C/288T, 3TB RAM, 23.04TB raw NVMe → ~7.68TB usable at si
 7. **Workload profile** — write-heavy? Decides whether read-intensive PM1743s are fine or mixed-use drives are warranted.
 8. **PBS placement** — dedicated host vs. VM, datastore sizing and retention.
 
-**Resolved by the revised BOM (2026-10-07):** the high-speed fabric exists — 3× NVIDIA SN5610 800GbE (Cumulus); the Proxmox cluster lives on Ethernet there. The Q3400-RA 144-port Quantum XDR InfiniBand switch is marked SPARE (AI/GPU side, not Proxmox — no IPoIB for Ceph). 7× SN2201 1GbE switches cover management. **No EveryScale** — Lenovo is not doing integration; CDW builds baremetal, so the runbook owns the full physical bring-up verification (new outline section 00a).
+**Resolved — fabric and integration:** the high-speed fabric is NVIDIA SN5610 800GbE (Cumulus); the Proxmox cluster lives on Ethernet there. The Q3400 Quantum XDR InfiniBand switch belongs to the AI/GPU side, not Proxmox — no IPoIB for Ceph. SN2201 1GbE switches cover management. **No vendor integration kit (no EveryScale)** — the build team owns integration for this design: it builds the baremetal, so the runbook owns the full physical bring-up verification (outline section 00a).
 
 ## 3. Full runbook section outline (step-by-step comes later)
 
 - **00 — Overview and variables** — role-based node names, network plan, placeholder inventory.
-- **00a — Physical bring-up verification** — rack/power check, cabling audit (breakout DAC legs → correct switch ports), link state and negotiated speeds on all 200G + 1GbE links, switch baseline config (Cumulus), end-to-end MTU 9000 check. (No EveryScale — CDW builds baremetal, so the runbook owns this.)
+- **00a — Physical bring-up verification** — rack/power check, cabling audit (breakout DAC legs → correct switch ports), link state and negotiated speeds on all 200G + 1GbE links, switch baseline config (Cumulus), end-to-end MTU 9000 check. (No EveryScale — the build team builds the baremetal, so the runbook owns this.)
 - **01 — Proxmox VE cluster install** — install on all 3 nodes, cluster join, quorum verification.
 - **02 — Network configuration** — bonds, bridges, VLANs, MTU, cluster network.
 - **03 — Ceph setup** — MON/MGR deployment, OSD creation, CRUSH layout.

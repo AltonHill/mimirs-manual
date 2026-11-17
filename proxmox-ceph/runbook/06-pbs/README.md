@@ -4,6 +4,7 @@ PBS 4.2. Backs up the cluster's VMs/containers. **PBS runs on a dedicated physic
 host — never on the hypervisor nodes themselves** (official Proxmox caution).
 
 Conventions for this section: variables-first (all values come from
+the site file `site-vars.sh` at the track root, copied from
 [../00-overview/variables.sh](../00-overview/variables.sh) — never hard-code per-site
 values in commands). Replace the EXAMPLE IPs below with your site's values.
 
@@ -20,7 +21,7 @@ values in commands). Replace the EXAMPLE IPs below with your site's values.
 1. Download the PBS 4.2 ISO from the Proxmox download page; install bare-metal on
    the dedicated host (graphical or serial installer; management interface on the
    MGMT network).
-2. After first boot, verify the version and join it to the same tailnet/site DNS
+2. After first boot, verify the version and register it in the site DNS
    so the PVE nodes can reach it by name:
 
 ```bash
@@ -69,8 +70,8 @@ Retention here uses **`--keep-*` flags** — these are correct on the PBS side.
 > fails (or silently misbehaves). Watch for this in every community guide you read.
 
 ```bash
-# All variables from ../00-overview/variables.sh
-source ../00-overview/variables.sh
+# All variables from the site file (../../site-vars.sh)
+source ../../site-vars.sh   # site file at the track root — never the template
 
 proxmox-backup-manager datastore create "$PBS_DATASTORE" /mnt/backup-cerberus \
   --comment "Cerberus cluster backup datastore" \
@@ -137,9 +138,9 @@ compression ratios in the estimate.
 Least-privilege: one dedicated user per cluster, one token, scoped to the datastore.
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
-# Section-local defaults (not in variables.sh — the site names these at §06.5):
+# Section-local defaults (not in site-vars.sh — the site names these at §06.5):
 PBS_BACKUP_USER="${PBS_BACKUP_USER:-pve-backup@pbs}"
 PBS_TOKEN_NAME="${PBS_TOKEN_NAME:-pve-token}"
 
@@ -162,7 +163,7 @@ Save: `PBS_FINGERPRINT`, and `PBS_PASSWORD` = the token value printed above.
 Run on any PVE node (commands replicate across the cluster).
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # 1) Register PBS as a PVE storage target
 pvesm add pbs pbs-cerberus \
@@ -208,7 +209,7 @@ scratch path and verify, or restore a *test* VM and boot it (the guided
 [scripts](../../scripts/backup-drill.sh) wraps this flow).
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 : "${PBS_BACKUP_USER:=pve-backup@pbs}" "${PBS_TOKEN_NAME:=pve-token}"
 : "${PBS_FINGERPRINT:?set from §6.2}" "${PBS_PASSWORD:?token value from §6.5}"
 

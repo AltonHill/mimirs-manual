@@ -43,6 +43,27 @@ Expected layout:
 
 ## 6.2 — Run the installer
 
+**Prepare the Run:ai system nodes first.** The backend placement in 6.5
+schedules only onto nodes labeled `node-role.kubernetes.io/runai-system`
+(`requiredDuringScheduling`). Nothing else in this runbook applies that
+label. `cm-runai-setup` may set it too; this runbook has not verified
+that. Apply it explicitly. That's harmless if the installer also does
+it, and the dependency is no longer silent: without the label, 6.5's
+`helm upgrade --atomic --wait` leaves backend pods Pending and rolls back
+after 15 minutes.
+
+```bash
+# idempotent: --overwrite re-applies the same value on a re-run
+for n in $K8S_CTRL; do
+  kubectl label node "$n" node-role.kubernetes.io/runai-system=true --overwrite
+done
+# verify: every $K8S_CTRL node carries it — prints MISSING otherwise
+for n in $K8S_CTRL; do
+  v=$(kubectl get node "$n" -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/runai-system}')
+  [ "$v" = true ] && echo "OK      $n" || echo "MISSING $n"
+done
+```
+
 ```bash
 cm-runai-setup
 ```
@@ -131,16 +152,50 @@ kubectl apply -f http-listener-policy.yaml
 > (`kubectl get crd | grep kgateway`) and use the matching API. The
 > migration is mechanical (same fields, new parent).
 
-Add the missing workloads listener:
+Add the missing workloads listener. This is a **`kubectl patch`**, not an
+`apply`. The fragment has no `apiVersion`/`kind`/`metadata`, so `apply`
+rejects it.
 
-```yaml
-# runai-gateway-workload-listener-patch.yaml
+> **WARNING — a merge patch replaces the whole `listeners` list.**
+> `--type merge` (JSON merge patch) does not merge list items. Whatever
+> list you send *becomes* the Gateway's listeners. A trimmed example that
+> lists only `https-workloads` **deletes** `https` and every other
+> listener the installer created, and takes down the Run:ai UI with them.
+> Run:ai's listener stack is interdependent. The patch file must carry
+> the **complete** list: every listener the Gateway has now, plus the new
+> one. The steps below snapshot the live list, build the patch, and
+> refuse to apply it if a dry run shows any current listener would
+> disappear.
+
+**1. Snapshot the live Gateway** (rollback copy + the names you must keep):
+
+```bash
+cd /cm/images/runai
+kubectl get gateway runai-gateway -n runai-backend -o yaml > runai-gateway-before.yaml
+printf '{"spec":{"listeners":%s}}\n' \
+  "$(kubectl get gateway runai-gateway -n runai-backend -o jsonpath='{.spec.listeners}')" \
+  > runai-gateway-listeners-before.json      # exact rollback patch
+kubectl get gateway runai-gateway -n runai-backend \
+  -o jsonpath='{range .spec.listeners[*]}{.name}{"\n"}{end}' | sort > listeners-live.txt
+cat listeners-live.txt
+```
+
+**2. Write the patch file: the complete list.** The template shows the
+listener set this deployment had (`https`), plus `https-workloads`. If
+step 1 listed **any other listener**, copy its full entry from
+`runai-gateway-before.yaml` into the list below *before* applying. The
+shell fills in `$FQDN_RUNAI` while it writes the file (kubectl itself
+never expands variables):
+
+```bash
+cat > runai-gateway-listeners-patch.yaml <<EOF
+# merge patch for Gateway runai-gateway — COMPLETE listeners list
 spec:
   listeners:
   - name: https
     protocol: HTTPS
     port: 443
-    hostname: runai.$DOMAIN
+    hostname: "${FQDN_RUNAI:?source 00-variables.sh first}"
     tls:
       mode: Terminate
       certificateRefs:
@@ -149,17 +204,50 @@ spec:
   - name: https-workloads
     protocol: HTTPS
     port: 443
-    hostname: "*.runai.$DOMAIN"
+    hostname: "*.${FQDN_RUNAI:?source 00-variables.sh first}"
     tls:
       mode: Terminate
       certificateRefs:
       - kind: Secret
         name: runai-backend-tls
+EOF
 ```
 
+**3. Dry-run, prove nothing is dropped, then patch:**
+
 ```bash
-kubectl apply -f runai-gateway-workload-listener-patch.yaml
+kubectl patch gateway runai-gateway -n runai-backend --type merge \
+  --patch-file runai-gateway-listeners-patch.yaml --dry-run=server \
+  -o jsonpath='{range .spec.listeners[*]}{.name}{"\n"}{end}' | sort > listeners-after.txt
+comm -23 listeners-live.txt listeners-after.txt > listeners-dropped.txt
+if [ -s listeners-after.txt ] && [ ! -s listeners-dropped.txt ] && grep -qx https-workloads listeners-after.txt; then
+  kubectl patch gateway runai-gateway -n runai-backend --type merge \
+    --patch-file runai-gateway-listeners-patch.yaml
+else
+  echo "REFUSED — the patch would drop these listeners (add them to the patch file):"
+  cat listeners-dropped.txt
+fi
 ```
+
+**4. Verify: query the Gateway, then hit the endpoint.**
+
+```bash
+# every listener present and Programmed=True (https + https-workloads + any kept):
+kubectl get gateway runai-gateway -n runai-backend \
+  -o jsonpath='{range .status.listeners[*]}{.name}{"  Programmed="}{.conditions[?(@.type=="Programmed")].status}{"\n"}{end}'
+# nothing that was there before is gone (must print nothing):
+kubectl get gateway runai-gateway -n runai-backend \
+  -o jsonpath='{range .spec.listeners[*]}{.name}{"\n"}{end}' | sort | comm -23 listeners-live.txt -
+# the base UI still answers, and a workload hostname now reaches the gateway
+# (any HTTP status, even 404, means the https-workloads listener matched it;
+# 000 = no TLS listener for that name):
+curl -sk -o /dev/null -w 'base      %{http_code}\n' "https://$FQDN_RUNAI/"
+curl -sk -o /dev/null -w 'workload  %{http_code}\n' \
+  --resolve "workload-check.$FQDN_RUNAI:443:$IP_RUNAI" "https://workload-check.$FQDN_RUNAI/"
+```
+
+Rollback (restores the exact pre-patch list):
+`kubectl patch gateway runai-gateway -n runai-backend --type merge --patch-file runai-gateway-listeners-before.json`.
 
 For `*.runai-inference.$DOMAIN`: check what Knative/Kourier created
 first — don't just attach it to `runai-gateway`:
@@ -230,17 +318,79 @@ kubectl rollout status statefulset/runai-backend-nats -n runai-backend --timeout
 # Never delete all NATS members simultaneously.
 ```
 
-Keep the kgateway Deployment off the workers:
+Keep the gateway **VIP** and the gateway **pods** off the GPU workers. These are
+two different mechanisms, and the earlier text used one for the other:
+
+- **VIP announcement:** the label
+  `node.kubernetes.io/exclude-from-external-load-balancers` tells the
+  LoadBalancer machinery (MetalLB's speakers, kube-proxy LB handling) not
+  to announce or serve LoadBalancer IPs from that node. It controls
+  **where `$IP_RUNAI` is reachable through**. It does **not** schedule or
+  move pods, and restarting the Deployment doesn't move them either. It
+  applies to *every* LoadBalancer service, the inference (Kourier) IP
+  included. That is intended here: no service VIP lands on a GPU worker.
 
 ```bash
 for n in $GPU_WORKERS; do
   kubectl label node "$n" node.kubernetes.io/exclude-from-external-load-balancers=true --overwrite
 done
-kubectl rollout restart deployment/runai-gateway -n runai-backend
-# validate the gateway pods land on the control-plane nodes
 ```
 
-Rollback: remove the labels, `helm rollback $RELEASE <GOOD_REVISION> -n $RELEASE_NS --wait --timeout 15m`.
+- **Pod placement:** the gateway Deployment is generated by the kgateway
+  controller from the Gateway. A `kubectl patch deployment` would be
+  reverted, so placement goes on kgateway's own knob, a
+  `GatewayParameters` pod template referenced from the Gateway. It
+  carries the same `runai-system` affinity and control-plane toleration
+  as the backend above. **[unverified]** The API group/version and the
+  `kube.podTemplate` field path are as documented for kgateway v2.x.
+  Check the installed CRD first (`kubectl explain
+  gatewayparameters.spec.kube.podTemplate`). If the Gateway already
+  references a GatewayParameters (`.spec.infrastructure.parametersRef`,
+  or on its GatewayClass), add the affinity to *that* object instead of
+  creating a second one.
+
+```bash
+kubectl get gateway runai-gateway -n runai-backend -o jsonpath='{.spec.infrastructure}{"\n"}'   # existing parametersRef?
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: GatewayParameters
+metadata:
+  name: runai-gateway-placement
+  namespace: runai-backend
+spec:
+  kube:
+    podTemplate:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/runai-system
+                    operator: Exists
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+EOF
+# spec.infrastructure is a map, not a list: this merge patch touches only parametersRef
+kubectl patch gateway runai-gateway -n runai-backend --type merge -p \
+  '{"spec":{"infrastructure":{"parametersRef":{"group":"gateway.kgateway.dev","kind":"GatewayParameters","name":"runai-gateway-placement"}}}}'
+kubectl rollout status deployment/runai-gateway -n runai-backend --timeout=10m
+# verify: every gateway pod is on a runai-system node (prints WRONG-NODE otherwise)
+sys_nodes=$(kubectl get nodes -l node-role.kubernetes.io/runai-system -o name | sed 's|node/||')
+gw_pods=$(kubectl get pods -n runai-backend -l gateway.networking.k8s.io/gateway-name=runai-gateway \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.nodeName}{"\n"}{end}')
+[ -n "$gw_pods" ] || echo "NO GATEWAY PODS FOUND — check the label selector: kubectl get pods -n runai-backend --show-labels"
+printf '%s\n' "$gw_pods" | while read -r pod node; do
+  [ -n "$pod" ] || continue
+  printf '%s\n' "$sys_nodes" | grep -qx "$node" && echo "OK         $pod on $node" || echo "WRONG-NODE $pod on $node"
+done
+```
+
+Re-check the placement after any Run:ai upgrade: the installer owns the
+Gateway and may reset `spec.infrastructure`.
+
+Rollback: remove the labels; drop the placement with `kubectl patch gateway runai-gateway -n runai-backend --type json -p '[{"op":"remove","path":"/spec/infrastructure/parametersRef"}]'`; backend: `helm rollback $RELEASE "${GOOD_REVISION:?set from helm-history-before.txt}" -n $RELEASE_NS --wait --timeout 15m`.
 
 ## 6.6 — Validate
 
@@ -262,20 +412,18 @@ nslookup $FQDN_RUNAI
 install -d -m 0700 /root/runai-backup && cd /root/runai-backup
 set +x   # no tracing while secrets are in play
 
-# Discover the live names first, then fill in the four values:
+# Discover the live names first, then export the four values in this shell:
+#   export PG_POD=... PG_SECRET=... PG_USER=... PG_DB=...
 kubectl -n runai-backend get pods      # -> PG_POD
 kubectl -n runai-backend get secrets    # -> PG_SECRET
-PG_POD="<postgresql-pod>"
-PG_SECRET="<postgresql-secret>"
-PG_USER="<db-user>"
-PG_DB="<db-name>"
+# every use below is ${PG_*:?} — an unset value stops that command
 
 kubectl get runaiconfig runai -n runai -o jsonpath='{.spec}' > runai_config_backup.yaml
 helm get values runai-backend -n runai-backend > runai_control_plane_values.yaml
-POSTGRES_PASSWORD=$(kubectl -n runai-backend get secret "$PG_SECRET" \
+POSTGRES_PASSWORD=$(kubectl -n runai-backend get secret "${PG_SECRET:?export PG_SECRET first}" \
   -o jsonpath='{.data.postgres-password}' | base64 -d)
-kubectl -n runai-backend exec "$PG_POD" -- \
-  env PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "$PG_USER" "$PG_DB" > runai_db_backup.sql
+kubectl -n runai-backend exec "${PG_POD:?export PG_POD first}" -- \
+  env PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "${PG_USER:?export PG_USER first}" "${PG_DB:?export PG_DB first}" > runai_db_backup.sql
 unset POSTGRES_PASSWORD
 chmod 0600 runai_config_backup.yaml runai_control_plane_values.yaml runai_db_backup.sql
 test -s runai_config_backup.yaml && test -s runai_db_backup.sql && echo "backups OK"

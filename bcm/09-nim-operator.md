@@ -7,11 +7,13 @@
 
 ```bash
 kubectl create namespace nim-service
-kubectl create secret -n nim-service docker-registry ngc-secret \
+# NGC_API_KEY comes from the shell (06.1 exports it from ngc-api.key);
+# bcm_require_secret refuses an unset value or a <PLACEHOLDER> value
+bcm_require_secret NGC_API_KEY && kubectl create secret -n nim-service docker-registry ngc-secret \
   --docker-server=nvcr.io \
   --docker-username='$oauthtoken' \
   --docker-password="$NGC_API_KEY"
-kubectl create secret -n nim-service generic ngc-api-secret \
+bcm_require_secret NGC_API_KEY && kubectl create secret -n nim-service generic ngc-api-secret \
   --from-literal=NGC_API_KEY="$NGC_API_KEY"
 # Optional: HuggingFace
 # kubectl create secret -n nim-service generic hf-api-secret \
@@ -57,9 +59,10 @@ kubectl get pods -n nim-service
 kubectl logs -n nim-service -l app=nimbus 2>/dev/null | tail -20
 # or the specific job pod:
 kubectl get pods -n nim-service
-kubectl describe nimcache <name> -n nim-service   # check conditions
+kubectl get nimcaches.apps.nvidia.com -n nim-service      # -> NIMCACHE name
+kubectl describe nimcache "${NIMCACHE:?set NIMCACHE to a name from the list above}" -n nim-service   # check conditions
 # Remove when done testing:
-kubectl delete nimcache <name> -n nim-service
+kubectl delete nimcache "${NIMCACHE:?set NIMCACHE}" -n nim-service
 ```
 
 - [ ] NIM cache reaches Ready; model servable through the inference

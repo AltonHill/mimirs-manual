@@ -9,31 +9,145 @@
 A hardened Ubuntu 24.04 host on the management network. All BCM/k8s
 admin work happens here — never from a laptop over VPN if you can avoid it.
 
+> **Lockout-safe order — don't reorder it.** Allow rule in → key login
+> **verified in a second session** → only then disable password auth →
+> only then enable the firewall. Keep your first session open until the
+> end. Each step checks its own precondition and refuses if it isn't met.
+> SSH is allowed only from `$NET_ADMIN_SRC_A` / `$NET_ADMIN_SRC_B`
+> (00-variables.sh). Their shipped defaults are documentation ranges that
+> match nothing real, so step 5 refuses to enable the firewall until you
+> set them to the networks you actually connect from.
+
+**1. Base packages.**
+
 ```bash
-# Fresh Ubuntu 24.04 Server install, then:
+# Fresh Ubuntu 24.04 Server install, then (source 00-variables.sh first):
 apt update && apt update && apt upgrade -y
+apt install -y neovim git curl wget jq dnsutils chrony python3
+```
 
-# SSH: key-only, no root password login
-sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-systemctl reload sshd
+**2. Allow rule in.** The firewall is still inactive, so this changes
+nothing yet:
 
-# Firewall: SSH from the admin network only
+```bash
 ufw default deny incoming
 ufw default allow outgoing
-ufw allow from <ADMIN-NET> to any port 22
-ufw --force enable
+for net in "${NET_ADMIN_SRC_A:?source 00-variables.sh first}" ${NET_ADMIN_SRC_B:-}; do
+  ufw allow from "$net" to any port 22 proto tcp
+done
+ufw show added        # expect one ALLOW 22/tcp rule per admin network
+```
 
-# Essentials
-apt install -y nvim git curl wget jq dnsutils chrony
+**3. Verify key login in a SECOND session.** From your admin
+workstation, open a new terminal and leave this one open:
 
+```bash
+# on the workstation (your key must already be in ~/.ssh/authorized_keys here):
+JUMPBOX_SSH="admin@jumpbox.example.internal"    # your login on the jumpbox
+ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no "$JUMPBOX_SSH" 'echo KEY-LOGIN-OK'
+```
+
+Don't continue until that prints `KEY-LOGIN-OK`. If it doesn't, install
+your key (`ssh-copy-id`) and retry. Password auth is still on, so
+nothing is lost yet.
+
+**4. Only then disable password auth.** Check the *effective* config,
+not just the file. On Ubuntu cloud images, a drop-in under
+`/etc/ssh/sshd_config.d/` can re-enable passwords and override the main
+file:
+
+```bash
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+grep -rl '^PasswordAuthentication yes' /etc/ssh/sshd_config.d/ 2>/dev/null   # any hit overrides — edit it to "no"
+sshd -t && systemctl reload ssh
+sshd -T | grep -E '^(passwordauthentication|permitrootlogin) '   # expect: no / prohibit-password
+```
+
+Repeat step 3's key login from the second session, and confirm that a
+password login is now refused:
+`ssh -o PubkeyAuthentication=no "$JUMPBOX_SSH"` should fail with
+`Permission denied (publickey)`.
+
+**5. Only then enable the firewall**, and only if the session you are
+in comes from an allowed network. The guard fails closed:
+
+- **Console** means the session's tty is a real tty device that is
+  **not** a pts — `/dev/tty1`, `/dev/ttyS0`, `/dev/hvc0` — and there is
+  no `SSH_CLIENT`. "Not a tty" (a pipe, a script, a job with no
+  terminal) is **not** a console.
+  - Console with no `SUDO_USER`: the source check is skipped.
+  - Console **under sudo**: once sudo has cleared the environment the
+    guard can't tell a console from an SSH session, so it proceeds only
+    on an explicit acknowledgement, `CONSOLE_CONFIRMED=yes`, and
+    otherwise refuses and names that variable. (On Ubuntu 24.04 root
+    has no password, so a console operator is normally under sudo.)
+- **Everything else** must show a source inside `$NET_ADMIN_SRC_A/B`:
+  `SSH_CLIENT` when it is set, otherwise this tty's login record
+  (`who -m`, which survives `sudo` and `su -`). An empty `SSH_CLIENT`
+  alone proves nothing: `sudo -i` / `sudo -s` strip it, and on Ubuntu
+  24.04 (root SSH login disabled) the ordinary operator is an SSH
+  session under sudo. A source that is missing, not an IP address (a
+  hostname, a tmux/screen session), or outside the ranges is a refusal.
+
+```bash
+src="${SSH_CLIENT:-}"; src="${src%% *}"; via="SSH_CLIENT"
+if [ -z "$src" ]; then
+  t="$(tty)" || t=""                         # "not a tty" -> empty: never a console
+  case "$t" in /dev/pts/*|"") con="" ;; /dev/*) con="$t" ;; *) con="" ;; esac
+  if [ -n "$con" ] && [ -z "${SUDO_USER:-}" ]; then
+    via="console"
+  elif [ -n "$con" ]; then
+    via="console+sudo"
+  else
+    # sudo -i/-s (or su -) cleared SSH_CLIENT: recover the source from this tty's login record
+    src="$(who -m | sed -n 's/.*(\([^()]*\))[[:space:]]*$/\1/p')"; via="who -m"
+  fi
+fi
+if [ "$via" = "console" ]; then
+  echo "console session ($con; no SSH_CLIENT, no SUDO_USER): no lockout risk for this session" && ufw --force enable
+elif [ "$via" = "console+sudo" ]; then
+  if [ "${CONSOLE_CONFIRMED:-}" = "yes" ]; then
+    echo "console session ($con) under sudo, acknowledged by CONSOLE_CONFIRMED=yes" && ufw --force enable
+  else
+    echo "REFUSED: tty $con is a console, but this shell is under sudo (SUDO_USER=${SUDO_USER:-}), which can hide an SSH session — if you are on the VM/BMC console, set CONSOLE_CONFIRMED=yes and re-run this block"
+  fi
+elif [ -n "$src" ] && python3 -c 'import ipaddress,sys
+try: ip=ipaddress.ip_address(sys.argv[1])
+except ValueError: sys.exit(1)
+sys.exit(0 if any(ip in ipaddress.ip_network(n, strict=False) for n in sys.argv[2:] if n) else 1)' \
+     "$src" "${NET_ADMIN_SRC_A:?source 00-variables.sh first}" ${NET_ADMIN_SRC_B:-}; then
+  echo "session source $src (from $via) is inside NET_ADMIN_SRC_A/B" && ufw --force enable
+else
+  echo "REFUSED: session source '${src:-unknown}' (from $via) is not an address inside NET_ADMIN_SRC_A/B — enabling ufw would lock you out"
+fi
+ufw status verbose
+```
+
+**On the console under sudo**, the acknowledgement is the documented
+path. First confirm you really are on the VM or BMC console: `tty`
+shows `/dev/tty1`, `/dev/ttyS*` or `/dev/hvc*`, and `who -m` shows no
+remote host in parentheses. Then set `export CONSOLE_CONFIRMED=yes` in
+that shell, re-run the block, and `unset CONSOLE_CONFIRMED` afterwards.
+Never set it in an SSH session: it tells the guard to skip the only
+check that prevents the lockout.
+
+Finally, from the **second** session, log in once more. Only after that
+succeeds, close the first. Locked out anyway? From the VM or BMC
+console: `ufw disable`.
+
+**6. Tooling.**
+
+```bash
 # kubectl + helm (match the cluster versions from 00-variables.sh)
 curl -LO "https://dl.k8s.io/release/v${K8S_VERSION}.0/bin/linux/amd64/kubectl"
 install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 ```
 
-- [ ] Only key-based SSH works; `ufw status` shows the admin-net rule
+- [ ] Key login verified in a second session **before** password auth was disabled
+- [ ] `sshd -T` shows `passwordauthentication no`; a password login is refused
+- [ ] `ufw status` shows one SSH rule per admin network (`$NET_ADMIN_SRC_A`/`B`), firewall active, second-session login still works
 - [ ] `kubectl version --client`, `helm version` match the plan
 
 ## 14.2 — DNS (Technitium or site DNS)
@@ -41,7 +155,7 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 The cluster needs forward **and** reverse DNS for every node and
 service FQDN from 01 (the Run:ai and `cm-*-setup` wizards check both).
 For greenfield, run Technitium DNS Server on the jumpbox or a small
-dedicated VM; brownfield can use the site's existing DNS (SuperDNS).
+dedicated VM; brownfield can use the site's existing DNS servers.
 
 ```bash
 # Technitium DNS Server (self-hosted authoritative + recursive):
@@ -81,15 +195,19 @@ On the time source (jumpbox or dedicated host):
 
 ```bash
 apt install -y chrony
-cat > /etc/chrony/conf.d/site.conf <<'EOF'
+# networks come from 00-variables.sh (source it first); written to a temp
+# file and moved into place only if every network expanded
+tmp=$(mktemp) && cat > "$tmp" <<EOF && install -m 0644 "$tmp" /etc/chrony/conf.d/site.conf
 # Upstream NTP — replace with the site's approved sources
 pool pool.ntp.org iburst
 # Serve time to the cluster networks
-allow 10.10.15.0/24
-allow 10.10.12.0/24
-allow 10.10.13.0/24
-allow 10.10.16.0/24
+allow ${NET_PROVISION:?source 00-variables.sh first}
+allow ${NET_STORAGE:?source 00-variables.sh first}
+allow ${NET_USER:?source 00-variables.sh first}
+allow ${NET_OOB:?source 00-variables.sh first}
 EOF
+rm -f "$tmp"
+grep '^allow' /etc/chrony/conf.d/site.conf    # expect the four networks from 01
 systemctl enable --now chrony
 chronyc sources
 ```

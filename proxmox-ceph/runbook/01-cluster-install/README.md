@@ -7,7 +7,7 @@ quorate 3-node cluster named `cerberus`.
 
 ```bash
 set -u
-source ../00-overview/variables.sh   # adjust path to your copy
+source ../../site-vars.sh   # site file at the track root — never the template
 ```
 
 Reference: [docs/references.md](../../docs/references.md) — Proxmox VE Admin Guide,
@@ -18,7 +18,7 @@ Reference: [docs/references.md](../../docs/references.md) — Proxmox VE Admin G
 ## 1. Pre-flight — finalize names and IPs
 
 **Hostname and IP changes are not supported after cluster creation.** Before
-touching the installer, lock these in `variables.sh` and get sign-off:
+touching the installer, lock these in `site-vars.sh` and get sign-off:
 
 - `NODE*_HOSTNAME` = `node-1`, `node-2`, `node-3` (final — no renames later)
 - `NODE*_MGMT_IP` on `MGMT_NET` with `MGMT_GW`, `DNS_SERVERS`
@@ -49,7 +49,7 @@ Boot the Proxmox VE 9.2 ISO on each node (XCC virtual media / USB — MANUAL-ONL
    (that lives on Ceph); `/etc/pve` is replicated cluster-wide by pmxcfs anyway.
    ext4 on HW RAID1 is the simple, supported, boringly reliable choice.
 3. Set hostname (`node-1` …), management IP / netmask / gateway / DNS from
-   `variables.sh` at the installer network screen.
+   `site-vars.sh` at the installer network screen.
 4. Set the root password (MANUAL-ONLY — record in the site's password manager),
    and an admin email.
 5. Complete the install and reboot. Repeat on node-2 and node-3 with their
@@ -85,6 +85,7 @@ Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
+```
 
 > **Guardrail — enterprise repo 401s.** Without a Proxmox subscription key, the
 > enterprise repository answers `apt update` with `401 Unauthorized`. It is
@@ -94,6 +95,7 @@ EOF
 > (If the site *does* hold subscriptions, keep the enterprise repo and skip
 > the no-subscription file instead — the repo file is the only change.)
 
+```bash
 # 3c. Full upgrade and reboot. Service-affecting for the node (nothing runs on
 #     it yet — just slow). MANUAL-ONLY in the sense that you watch it finish.
 apt update && apt full-upgrade -y
@@ -204,7 +206,7 @@ Quorum notes for 4 nodes:
 
 ## 01 acceptance checklist
 
-- [ ] Hostnames/IPs final and recorded in `variables.sh` (§1)
+- [ ] Hostnames/IPs final and recorded in `site-vars.sh` (§1)
 - [ ] PVE 9.2.x installed on the M.2 RAID1 volume, **ext4**, on all 3 nodes (§2)
 - [ ] Enterprise repo disabled; no-subscription enabled; `full-upgrade` done; same `pveversion` everywhere (§3)
 - [ ] NTP in sync, DNS resolving on all nodes (§3)

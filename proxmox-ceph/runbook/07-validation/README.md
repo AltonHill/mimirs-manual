@@ -3,7 +3,7 @@
 Acceptance gate for the whole build. Run on the fully built 3-node cluster
 (cluster + network + Ceph + pools + HA + PBS, all complete).
 
-Conventions: variables-first (source `../00-overview/variables.sh`). Copy-pasteable
+Conventions: variables-first (source the site file `../../site-vars.sh`, never the template). Copy-pasteable
 code blocks. **DESTRUCTIVE steps are marked ⚠️ DESTRUCTIVE — read the whole drill
 before starting, and answer the confirmation prompts honestly.**
 
@@ -18,7 +18,7 @@ before starting, and answer the confirmation prompts honestly.**
 The cluster is built; re-verify the physical layer didn't shift under you:
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # per node: link speed still 200G, MTU 9000 intact, OSD devices still raw
 for n in "$NODE1_HOSTNAME" "$NODE2_HOSTNAME" "$NODE3_HOSTNAME"; do
@@ -33,7 +33,7 @@ bash ../../scripts/net-verify.sh   # end-to-end MTU + corosync UDP reachability
 All of these must be clean before any failure drill:
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 ceph -s                       # HEALTH_OK, 3 mons quorum, 6 OSDs up+in, no misplaced/degraded
 ceph health detail            # must be empty (only expected warnings tolerated, logged below)
@@ -62,7 +62,7 @@ HEALTH_OK. **Rollback:** re-weight the OSD back in (or replace the drive) and le
 recovery finish.
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # 1) Baseline
 ceph osd df && ceph -s
@@ -118,7 +118,7 @@ self-fence on the dead node, HA restarts its VMs on survivors.**
 VM running on node-2; `ha-manager status` shows HA manager active on all 3 nodes.
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # 1) Baseline: which VMs on node-2, HA state
 ha-manager status
@@ -181,7 +181,7 @@ corosync link0 on 1GbE mgmt, link1 on the 200G fabric; a test VM doing steady
 write I/O (e.g. `fio` sequential write) with visible throughput.
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # 1) Baseline: which fabric link carries what (from §02 interface inventory)
 #    Note which switch port = node-2's FIRST 200G leg.
@@ -225,7 +225,7 @@ Non-destructive to production **if** done on a scratch VM — treat it as
 destructive to the *test* VM only. Restores a real backup from PBS and boots it.
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 
 # Guided path (confirmations at every step):
 bash ../../scripts/backup-drill.sh

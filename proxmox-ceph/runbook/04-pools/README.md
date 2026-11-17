@@ -4,13 +4,13 @@ Create the VM-storage RBD pool (the pool VMs and LXC volumes live on), with repl
 
 **Design targets:** `vm-storage`, size=3 / min_size=2, PG autoscale **on** (the default is `warn` — always override it), RBD application, registered as Proxmox storage.
 
-**Variables** — defined in [00-overview/variables.sh](../00-overview/variables.sh); **do not redefine them here**, source the file first:
+**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**, source the site file first:
 
 ```bash
-source ../00-overview/variables.sh
+source ../../site-vars.sh   # site file at the track root — never the template
 # Expected names: POOL_VM_NAME (default "vm-storage"),
 #                 POOL_VM_TARGET_SIZE (e.g. "5T" — see capacity math below)
-# Placeholders if variables.sh is not yet populated:
+# Placeholders if site-vars.sh is not yet populated:
 #   POOL_VM_NAME="vm-storage"
 #   POOL_VM_TARGET_SIZE="5T"
 ```
