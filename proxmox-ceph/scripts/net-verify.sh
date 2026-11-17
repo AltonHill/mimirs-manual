@@ -8,8 +8,12 @@
 # Verifies:
 #   1. End-to-end MTU on the Ceph public + Ceph cluster networks
 #      (ping -M do with a 8972-byte payload => 9000-byte frames, DF set)
-#   2. corosync UDP port range 5405-5412 reachable between all nodes
-#      (probe datagrams between every node pair; needs nc/netcat)
+#   2. corosync UDP port range 5405-5412 reachable between all nodes, on
+#      BOTH corosync networks: link0 (mgmt IPs) and link1 (Ceph public
+#      IPs — link1 is mandatory). Probe datagrams; needs nc/netcat.
+#   4. PBS backup VLAN: MTU ${PBS_MTU} end to end from this node to the
+#      PBS host's VLAN address (PBS_VLAN_IP) — the path every backup and
+#      restore takes (H3).
 #   3. Optional: iperf3 bandwidth sanity on the 200G fabric (auto-skipped
 #      if iperf3 is missing on either end; disable with --no-iperf3)
 #
@@ -71,6 +75,7 @@ NODES=("$NODE1_HOSTNAME" "$NODE2_HOSTNAME" "$NODE3_HOSTNAME")
 PUBLIC_IPS=("$NODE1_PUBLIC_IP" "$NODE2_PUBLIC_IP" "$NODE3_PUBLIC_IP")
 CLUSTER_IPS=("$NODE1_CLUSTER_IP" "$NODE2_CLUSTER_IP" "$NODE3_CLUSTER_IP")
 MGMT_IPS=("$NODE1_MGMT_IP" "$NODE2_MGMT_IP" "$NODE3_MGMT_IP")
+PBS_PAYLOAD=$(( PBS_MTU - 28 ))
 
 # Payload size for MTU test: 9000 - 20 (IP) - 8 (ICMP) = 8972
 MTU_PAYLOAD=$(( CEPH_PUBLIC_MTU - 28 ))
@@ -82,13 +87,15 @@ echo "This script makes NO configuration changes. It will test:"
 echo "  [1] MTU ${CEPH_PUBLIC_MTU} end-to-end (DF ping, ${MTU_PAYLOAD}-byte payload)"
 echo "      public  : ${PUBLIC_IPS[*]}"
 echo "      cluster : ${CLUSTER_IPS[*]}"
-echo "  [2] corosync UDP reachability (5405-5412)"
-echo "      between all node pairs (mgmt IPs: ${MGMT_IPS[*]})"
+echo "  [2] corosync UDP reachability (5405-5412) on both links"
+echo "      link0 (mgmt IPs): ${MGMT_IPS[*]}"
+echo "      link1 (public IPs): ${PUBLIC_IPS[*]}"
 if [ "$WITH_IPERF3" -eq 1 ]; then
   echo "  [3] iperf3 bandwidth sanity on the 200G fabric (optional; skipped if missing)"
 else
   echo "  [3] iperf3 bandwidth test: DISABLED by --no-iperf3"
 fi
+echo "  [4] PBS backup VLAN: MTU ${PBS_MTU} (DF ping, ${PBS_PAYLOAD}-byte payload) to ${PBS_VLAN_IP}"
 echo ""
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -119,11 +126,11 @@ done
 
 # --- [2] corosync UDP reachability ----------------------------------------
 echo ""
-echo "--- [2] corosync UDP 5405-5412 reachability ---"
+echo "--- [2] corosync UDP 5405-5412 reachability (link0 mgmt + link1 public) ---"
 if ! command -v nc >/dev/null 2>&1; then
   warn "[2] 'nc' (netcat) not installed — cannot probe UDP. Install netcat and re-run, or verify corosync links after cluster join."
 else
-  for target in "${MGMT_IPS[@]}"; do
+  for target in "${MGMT_IPS[@]}" "${PUBLIC_IPS[@]}"; do
     if echo "$LOCAL_IPS" | grep -qw "$target"; then
       echo "  (skip $target — local address)"
       continue
@@ -181,6 +188,15 @@ else
       fi
     done
   fi
+fi
+
+# --- [4] PBS backup VLAN -------------------------------------------------
+echo ""
+echo "--- [4] PBS backup VLAN: MTU ${PBS_MTU} to ${PBS_VLAN_IP} ---"
+if ping -M do -s "$PBS_PAYLOAD" -c 4 -W 2 "$PBS_VLAN_IP" >/dev/null 2>&1; then
+  pass "[4] PBS host $PBS_VLAN_IP accepts ${PBS_MTU}-byte frames (DF) on VLAN ${PBS_VLAN}"
+else
+  fail "[4] PBS host $PBS_VLAN_IP unreachable or REJECTED ${PBS_MTU}-byte frames — check bond0.${PBS_VLAN} on this node (§02), the PBS host's NIC MTU, and the SN5610 PBS ports (00a §6/§7)."
 fi
 
 echo ""

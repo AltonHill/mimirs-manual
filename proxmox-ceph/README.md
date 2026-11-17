@@ -25,10 +25,8 @@ hardware baseline, and original open questions are preserved in
 cp runbook/00-overview/variables.sh site-vars.sh
 nvim site-vars.sh          # replace every PLACEHOLDER *and* every template default
 
-# 2. Validate the track — currently RED (exit 1): the doc-block bash -n and
-#    placeholder-lint stages fail on known <placeholder>-in-command content
-#    in the runbook docs; every hit is listed. Until the gate is green, the
-#    blocks it names are not paste-safe as written.
+# 2. Validate the track — green = exit 0 (doc-block bash -n, placeholder
+#    lint, paste-atomicity lint, render smoke + credential tripwire)
 scripts/check.sh
 
 # 3. Render the site-specific guide (see below), then follow it 00 -> 07
@@ -49,14 +47,14 @@ scripts/render.py --vars site-vars.sh --out client-docs/
 ```bash
 scripts/render.py --vars site-vars.sh --out review-docs/   # team reviews this
 # ...after sign-off, on the nodes (preflight runs after 01, before 03):
-scripts/preflight.sh       # reads site-vars.sh at the track root, or --vars <path>
+scripts/preflight.sh       # reads site-vars.sh at the track root; --vars FILE names another
 # ...then follow runbook/ 00 -> 07
 ```
 
 **3. Build first, document after** (the favorite):
 ```bash
 # on the nodes, just build it (preflight runs after 01, before 03):
-scripts/preflight.sh       # reads site-vars.sh at the track root, or --vars <path>
+scripts/preflight.sh       # reads site-vars.sh at the track root; --vars FILE names another
 # ...follow runbook/ 00 -> 07...
 # ...when the build is done, the deliverable:
 scripts/render.py --vars site-vars.sh --out final-docs/
@@ -74,15 +72,63 @@ names (`BF3_P1`, `BF3_P2`, `MGMT_IF`, undefined in the template on purpose)
 are left untouched. The render report lists what still needs attention:
 values still literally `PLACEHOLDER`; names defined but empty (passed through
 as `$VAR`, never blanked); and every audited value — networks, gateways,
-IPs, the PBS host, DNS, NTP — still identical to the template's shipped
-default. It reports; it does not stop the render. `cerberus_audit_placeholders`
-(defined in the variables file) runs the same audit in a node shell.
+IPs, the PBS host, DNS, NTP, the mail target (`MAILTO`), the pool sizing
+(`POOL_VM_TARGET_SIZE`, `POOL_VM_QUOTA_BYTES`), the XCC login name — still
+identical to the template's shipped default. It reports; it does not stop
+the render. `cerberus_audit_placeholders` (defined in the variables file)
+runs the same audit in a node shell.
+
+**Credentials never appear in a deliverable, placeholder or real.** Any name
+matching `*PASSWORD*`, `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PRODUCT_KEY*` or
+`*LICENSE_KEY*` is never substituted: the rendered guide keeps `$NAME` for
+the operator's shell, and every render lists the kept names. If such a name
+holds a live value **in the variables file**, render refuses (exit 3) and
+writes nothing; if it is live only in the environment (the sanctioned
+pattern: `read -rs PBS_PASSWORD; export PBS_PASSWORD`), render warns by name
+and continues. The PBS token secret (§06.5) lives in the site's secrets
+vault — never in `site-vars.sh`. At run time, `cerberus_require_secret NAME`
+refuses an unset or placeholder secret (names only, never values).
 
 The node scripts (`preflight.sh`, `net-verify.sh`, `backup-drill.sh`) take
-`--vars <path>` like `render.py`; without it they read `site-vars.sh` at the
+`--vars FILE` like `render.py`; without it they read `site-vars.sh` at the
 track root, and if neither exists they stop. They never fall back to the
-template's defaults. The runbook sections source the same file
-(`source ../../site-vars.sh` from inside `runbook/NN-*/`).
+template's defaults.
+
+## Working-directory contract (read before pasting anything)
+
+The runbook's commands run **on the nodes** (and the PBS host), from a copy
+of this repository. They find the site file through one variable, not
+through the current directory:
+
+```bash
+# Once per host (each node, and the PBS host): put the repo copy where the
+# site keeps it — /root/mimirs-manual is the convention — then:
+grep -qs '^export CERBERUS_TRACK=' /root/.bashrc \
+  || echo 'export CERBERUS_TRACK=/root/mimirs-manual/proxmox-ceph' >> /root/.bashrc
+export CERBERUS_TRACK=/root/mimirs-manual/proxmox-ceph
+test -f "$CERBERUS_TRACK/site-vars.sh" && echo "site file OK"
+```
+
+Every state-changing block in the runbook is pasted as one **fail-closed
+unit**:
+
+```text
+( set -euo pipefail
+  source "${CERBERUS_TRACK:?export CERBERUS_TRACK=... first}/site-vars.sh"
+  ...commands...
+)
+```
+
+Bash reads the whole `( … )` before running any of it, and the first
+failure — a guard, an unset variable, a failed write — stops the block. The
+operator's own shell survives (an `exit` inside the parentheses leaves only
+the subshell). A block that does not start with `(` either changes nothing
+(a check you read) or deliberately sets up your shell for the next block
+(marked `# paste: session`). `scripts/check.sh` enforces this: a block that
+sources the site file or calls a `cerberus_require_*` guard outside the
+idiom, or sources the site file by a relative path, fails the gate. The
+per-node interface names live in `/root/cerberus-node.env` (written in
+§02 §1), so a second SSH session or the XCC console has them too.
 
 ## Section workflow
 
@@ -115,12 +161,12 @@ things on purpose.
 - `runbook/` — the full step-by-step (one directory per section)
 - `scripts/` — idempotent, guarded automation (preflight checks, `--dry-run`, confirmations);
   `render.py` builds the site-specific Markdown guide, `check.sh` is the validation gate
-  (currently red on known placeholder-in-command doc content — see Quickstart step 2)
+  (green = exit 0)
 
 ## Conventions
 
 - **Customer-anonymized:** role-based node names (`node-1`, `node-2`, `node-3`), no customer
-  identifiers anywhere, credentials as placeholders.
+  identifiers anywhere; credentials never in the repo or a rendered guide — read at run time.
 - **Variables-first:** per-site values go in `site-vars.sh` (a copy of the pristine
   template `runbook/00-overview/variables.sh`, kept at the track root); everything
   else is copy-paste.

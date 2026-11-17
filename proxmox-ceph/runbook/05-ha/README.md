@@ -4,16 +4,13 @@ Proxmox HA on the three nodes: hardware watchdog fencing FIRST, then HA rules (n
 
 > **READ THIS FIRST — the fencing model.** Proxmox HA has **no external fence agents**. There is no IPMI/STONITH/ipmilan integration in Proxmox, and there never has been (the old "Fencing" menu in the GUI is a display-only remnant). Fencing is **watchdog self-fencing**: if a node stops behaving, its own watchdog timer expires and the node power-cycles itself. Anyone expecting traditional external fencing must understand this up front — it changes what "fenced" means and how fast it happens. On Lenovo hardware the correct path is the **IPMI hardware watchdog**, configured below. The Lenovo XCC **cannot** be used as an external fence agent — no such configuration exists in Proxmox; the IPMI watchdog is the supported equivalent.
 
-**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**, source the site file first:
+**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**. This section consumes:
 
-```bash
-source ../../site-vars.sh   # site file at the track root — never the template
-# Expected names: HA_RULE_NAME (e.g. "production"),
-#                 HA_PROTECTED_VMS (e.g. "vm:100,vm:101")
-# Placeholders if site-vars.sh is not yet populated:
-#   HA_RULE_NAME="production"
-#   HA_PROTECTED_VMS="vm:100,vm:101"
-```
+- `HA_RULE_NAME` — the node-affinity rule's name (template `ha-prefer-any`);
+- `HA_PROTECTED_VMS` — **one format everywhere: space-separated numeric VMIDs**, e.g. `"100 101"`. The template default is **empty, and empty protects nothing**: Step 2 refuses to run until the site names its VMs. (There is no fallback to "100 101" or any other guess.)
+- `NODE1_HOSTNAME` … `NODE3_HOSTNAME` — the rule's node list.
+
+Each block sources the site file itself (track README, "Working-directory contract").
 
 Run all steps as `root`, on each node where noted.
 
@@ -48,8 +45,10 @@ options ipmi_watchdog action=power_cycle
 - Regenerate the initramfs and reboot so the module loads early:
 
 ```bash
-update-initramfs -u -k all
-reboot
+( set -euo pipefail      # no reboot if the initramfs rebuild fails
+  update-initramfs -u -k all
+  reboot
+)
 ```
 
 ### 1b. Disable competing watchdogs
@@ -77,34 +76,47 @@ journalctl -u pve-ha-lrm -u pve-ha-crm --since "10 min ago" | grep -i watchdog
 
 ---
 
-## Step 2 — HA node-affinity rule
+## Step 2 — Put the protected VMs under HA, then create the node-affinity rule
 
 > **Do NOT use `ha-manager groupadd`.** Groups are deprecated in PVE 9.x in favor of HA rules. Old guides and forum posts still teach `groupadd` — this runbook does not. The replacement is `node-affinity`.
 
-Create one rule covering the three nodes (run on **any one** node; HA config is cluster-wide):
+**Order matters:** the resources are added to HA **first**, and only then does the rule reference them (whether `rules add` accepts resources not yet under HA is **[unverified]** — this order never asks). One block, run on **any one** node (HA config is cluster-wide); it validates the VMID list, skips (with a NOTE) anything already under HA, and converts the list to the rule's `vm:<id>` form itself:
 
 ```bash
-ha-manager rules add node-affinity "${HA_RULE_NAME:-production}" \
-  --nodes node-1,node-2,node-3 \
-  --resources "${HA_PROTECTED_VMS:-vm:100,vm:101}"
+( set -euo pipefail
+  source "${CERBERUS_TRACK:?export CERBERUS_TRACK=/path/to/proxmox-ceph first (track README)}/site-vars.sh"
+  cerberus_require_vars HA_RULE_NAME NODE1_HOSTNAME NODE2_HOSTNAME NODE3_HOSTNAME
+  [ -n "${HA_PROTECTED_VMS// /}" ] \
+    || { echo "REFUSED: HA_PROTECTED_VMS is empty — nothing would be protected. Set it in site-vars.sh (space-separated VMIDs, e.g. \"100 101\")." >&2; exit 1; }
+  resources=""
+  for id in $HA_PROTECTED_VMS; do
+    [[ "$id" =~ ^[0-9]+$ ]] || { echo "FATAL: '$id' in HA_PROTECTED_VMS is not a numeric VMID (format: \"100 101\")" >&2; exit 1; }
+    qm config "$id" >/dev/null || { echo "FATAL: VM $id does not exist" >&2; exit 1; }
+    if grep -qx "vm: $id" <<<"$(ha-manager config)"; then
+      echo "NOTE: vm:$id is already under HA — left as is"
+    else
+      ha-manager add "$id" --state started
+    fi
+    resources="${resources:+$resources,}vm:$id"
+  done
+  ha-manager rules add node-affinity "$HA_RULE_NAME" \
+    --nodes "$NODE1_HOSTNAME,$NODE2_HOSTNAME,$NODE3_HOSTNAME" \
+    --resources "$resources"
+  ha-manager rules list
+)
 ```
 
-- `--nodes node-1,node-2,node-3` — the VMs prefer these nodes in listed order; on failure they restart on the next available node in the list.
-- `--resources vm:100,vm:101` — the protected VMIDs (comma-separated; containers are `ct:<id>`).
-- Useful variants: add `--affinity negative` to *keep resources off* the listed nodes; add a `resource-affinity` rule with `--affinity negative` to keep two VMs on different nodes (e.g. a VM and its replica). List and remove with `ha-manager rules list` / `ha-manager rules remove <name>`.
+(`ha-manager config` lists each resource as a `vm: <id>` section header — the already-present check reads that form; **[unverified]** wording on 9.2. If the rule already exists, `rules add` fails and stops the block: inspect it with `ha-manager rules list`.)
 
-> **node-4 callout:** adding the 4th node does not change MONs (they stay at 3, §03) but you **do** update HA rules: append `,node-4` to `--nodes` in each rule if the new node should host protected VMs, or leave rules untouched to keep the 4th node as compute/rebalance capacity only.
+- `--state started` means HA actively keeps the VM running: it starts it if stopped and restarts it on another node if its host fails. Other states: `enabled`, `disabled`, `ignored`, `stopped` (see `man ha-manager`). Change later with `ha-manager set vm:ID --state STATE`.
+- `--nodes` — the site's three hostnames; the VMs prefer these nodes in listed order and restart on the next available one.
+- `--resources` — built from `HA_PROTECTED_VMS` (`"100 101"` → `vm:100,vm:101`). Containers (`ct:ID`) are out of scope for this list; add them by hand with the same order (add, then rule).
+- Useful variants: add `--affinity negative` to *keep resources off* the listed nodes; add a `resource-affinity` rule with `--affinity negative` to keep two VMs on different nodes (e.g. a VM and its replica). List and remove with `ha-manager rules list` / `ha-manager rules remove NAME`.
 
-## Step 3 — Add resources to HA
+> **node-4 callout:** adding the 4th node does not change MONs (they stay at 3, §03) but you **do** update HA rules: add `$NODE4_HOSTNAME` to `--nodes` in each rule if the new node should host protected VMs, or leave rules untouched to keep the 4th node as compute/rebalance capacity only.
 
-For each protected VM (run on any node):
+## Step 3 — Verify the HA resources
 
-```bash
-ha-manager add 100 --state started
-ha-manager add 101 --state started
-```
-
-- `--state started` means HA actively keeps the VM running: it starts it if stopped and restarts it on another node if its host fails. Other states: `enabled`, `disabled`, `ignored`, `stopped` (see `man ha-manager`). Change later with `ha-manager set <vmid> --state <state>`.
 - Verify:
 
 ```bash
@@ -148,14 +160,14 @@ Enabling maintenance on a node gracefully migrates its HA resources to the other
 What actually happens when node-2 dies uncleanly (power loss, kernel hang), with the config above:
 
 1. **Detection:** the surviving nodes' corosync/CRM notices node-2 is gone (membership change, typically within tens of seconds).
-2. **Fencing:** the dead node's **own watchdog** expires (~10 s countdown) and the BMC power-cycles it. This is the fence — it guarantees node-2 can't write to Ceph while its VMs are being restarted elsewhere. (If the node is truly dead — PSU failure — there's nothing to fence; the CRM proceeds on quorum.)
+2. **Fencing:** a node that has lost quorum stops feeding its **own watchdog**; once it expires (the ~10 s IPMI countdown, armed while the node runs HA resources) the BMC power-cycles it. This is the fence — it guarantees node-2 can't write to Ceph while its VMs are being restarted elsewhere. The survivors' CRM waits until the dead node's HA lock has expired — by which time its watchdog must have fired — before recovering its services. (If the node is truly dead — PSU failure — there's nothing to fence; the CRM proceeds on quorum.) Only §07 drill (e), the isolation drill, observes this happening; a powered-off node (drill b) cannot fence.
 3. **Recovery:** the CRM restarts node-2's HA resources on node-1/node-3 per the node-affinity rule.
 
 **Realistic timing expectations** (ballpark — §07 failure testing measures the real numbers on this hardware):
 
-- Watchdog fence + BMC power cycle: ~2–4 minutes before the node is booting again.
+- Watchdog fence: the isolated node's watchdog fires and the BMC power-cycles it **~1–2 minutes** after it loses quorum; it is booting again **~2–4 minutes** after the failure (§07 drill (e) measures both).
 - VM restart on a survivor: begins once the CRM confirms the node is gone and fenced, typically **~1–2 minutes** after failure detection; the VM then boots normally (add its own boot time).
-- Total service interruption for a protected VM: roughly **2–5 minutes** end to end. Ceph I/O continues throughout on the surviving replicas (§04 size=3/min_size=2) — storage does not stall, only the VM's compute restarts.
+- Total service interruption for a protected VM: roughly **2–5 minutes** end to end (plus the guest's own boot). §07 drills (b) and (e) use these same numbers as their expectations. Ceph I/O continues throughout on the surviving two copies (§04: size=3/min_size=2, degraded, no rebuild target until the node returns) — storage does not stall, only the VM's compute restarts.
 
 What HA does **not** do: it does not live-migrate a dead node (that's impossible — the source is gone); it restarts. It does not protect VMs on local storage; it does not replace backups (§06).
 
@@ -165,7 +177,8 @@ What HA does **not** do: it does not live-migrate a dead node (that's impossible
 
 - [ ] `/etc/default/pve-ha-manager` + `/etc/modprobe.d/ipmi_watchdog.conf` in place on all 3 nodes, `ipmi_watchdog` loaded, no competing watchdog modules
 - [ ] `ipmitool mc watchdog get` shows ~10 s countdown on all 3 nodes
-- [ ] `ha-manager rules list` shows the node-affinity rule with all 3 nodes
+- [ ] `HA_PROTECTED_VMS` set (space-separated VMIDs); each VM added to HA **before** the rule
+- [ ] `ha-manager rules list` shows the `$HA_RULE_NAME` node-affinity rule with all 3 nodes
 - [ ] `ha-manager status` shows each protected VM `started` on its node
 - [ ] `disarm-ha` → `arm-ha` cycle tested once (confirm arm-ha re-arms; watch `ha-manager status` resume)
 

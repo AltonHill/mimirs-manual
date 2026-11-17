@@ -19,12 +19,14 @@ In scope:
 - Rack/power/cabling verification of 3x SR650 V4 + 2x SN5610 + SN2201 mgmt (00a)
 - Firmware baseline (XCC/BMC, UEFI, adapters) via XCC and OneCLI (00a)
 - Proxmox VE 9.2.x install and 3-node cluster formation (01)
-- Host networking: bonds, bridges, VLANs, MTU, corosync links (02)
+- Host networking: bonds, bridges, VLANs (incl. the PBS backup VLAN), MTU (02);
+  both corosync links — link1 is a **required** step of 01 (§7), run after 02
 - Ceph Tentacle deployment: MON/MGR/OSD, CRUSH (03)
 - RBD pools with size=3/min_size=2 and pg autoscaling (04)
 - Proxmox HA with hardware watchdog fencing (05)
 - Proxmox Backup Server on a dedicated host: datastores, jobs, retention (06)
-- Validation: OSD failure, node loss, network partition, restore drill (07)
+- Validation: OSD failure at planned fill, node power loss / HA restart,
+  isolation (the fencing drill), fabric-leg loss, restore drill (07)
 
 ## Assumptions (locked design decisions and limitations)
 
@@ -49,14 +51,24 @@ the runbook needs adaptation first.
 7. **BlueField-3 B3220 in Ethernet NIC mode** (2x 200G). DPU/ECPF mode is out of
    scope. No InfiniBand for the Proxmox fabric: the Q3400 XDR IB switch is SPARE
    (AI/GPU side) — **no IPoIB for Ceph**, Ethernet only.
-8. **Dedicated PBS host** (separate physical machine, reachable on the mgmt
-   network). Proxmox docs explicitly caution against installing PBS on the
-   hypervisor nodes themselves.
+8. **Dedicated PBS host** (separate physical machine). Proxmox docs explicitly
+   caution against installing PBS on the hypervisor nodes themselves. It has
+   **two** network attachments: its admin address on the mgmt network (GUI,
+   SSH), and its **backup address on its own VLAN on the 200G fabric**
+   (`PBS_VLAN` / `PBS_NET` / `PBS_VLAN_IP`). Every backup and restore uses
+   the VLAN address, so the nightly 02:00 backup never shares the single
+   1GbE mgmt link with corosync link0. The PBS host's fabric NIC, its two
+   SN5610 ports and cables are a BOM item — see the 00a §6 cable plan.
 9. **No external storage arrays** anywhere in the design — none spec'd, none plumbed in.
 10. **No vendor integration kit** (no EveryScale): the builder racks and cables
     baremetal, so this runbook owns the full physical bring-up verification (00a).
-11. **Corosync link0 on the 1GbE management network** (physically separate NIC from
-    the 200G fabric). Optional link1 on the Ceph public VLAN.
+11. **Two corosync links, both required.** link0 on the 1GbE management
+    network (OCP NIC → SN2201); **link1 on the Ceph public VLAN over the
+    fabric bond** (BF3 → the two SN5610s — the physically separate DAC path
+    from the mgmt link). The cluster is created with link0 in 01 §4–§5;
+    link1 is added by the **required** step 01 §7 once 02 has built the
+    fabric — every build passes through it, and 03 refuses to start
+    without it. One link is a single point of failure for quorum.
 12. **Fencing = watchdog self-fencing only.** Proxmox HA has no external IPMI/STONITH
     fence agents; the supported equivalent on this hardware is the IPMI hardware
     watchdog configured inside each host (05).
@@ -79,19 +91,21 @@ the runbook needs adaptation first.
 
 | Network | VLAN | CIDR (placeholder) | MTU | Physical path | Purpose |
 |---|---|---|---|---|---|
-| mgmt | untagged | `10.10.10.0/24` | 1500 | OCP 1GbE → SN2201 | Proxmox mgmt, corosync link0, XCC/BMC, PBS |
-| ceph-public | 100 | `10.20.20.0/24` | 9000 | bond0 (active-backup, 2×200G BF3) → SN5610-A/B | Ceph client traffic + VM/guest traffic |
+| mgmt | untagged | `10.10.10.0/24` | 1500 | OCP 1GbE → SN2201 | Proxmox mgmt, **corosync link0**, XCC/BMC, PBS host admin (GUI/SSH) — no backup traffic |
+| ceph-public | 100 | `10.20.20.0/24` | 9000 | bond0 (active-backup, 2×200G BF3) → SN5610-A/B | Ceph client traffic + VM/guest traffic + **corosync link1** |
 | ceph-cluster | 200 | `10.20.30.0/24` | 9000 | same bond0 (VLAN sub-if) → SN5610-A/B | OSD replication / recovery / backfill / heartbeat |
+| pbs-backup | 300 | `10.20.40.0/24` | 9000 | same bond0 (VLAN sub-if); PBS host fabric NIC → SN5610-A/B (access VLAN) | PVE ↔ PBS backup and restore traffic only |
 | fabric underlay | — | — | 9216 | OSFP-800G → 4×200G breakout DACs | switch-side jumbo headroom (Cumulus default) |
 
 Per-node IP plan (template defaults — resolve in `site-vars.sh`):
 
-| Node | mgmt | ceph-public (.100) | ceph-cluster (.200) | XCC |
-|---|---|---|---|---|
-| node-1 | 10.10.10.11 | 10.20.20.11 | 10.20.30.11 | 10.10.10.21 |
-| node-2 | 10.10.10.12 | 10.20.20.12 | 10.20.30.12 | 10.10.10.22 |
-| node-3 | 10.10.10.13 | 10.20.20.13 | 10.20.30.13 | 10.10.10.23 |
-| node-4 (opt) | 10.10.10.14 | 10.20.20.14 | 10.20.30.14 | 10.10.10.24 |
+| Node | mgmt (link0) | ceph-public (.100, link1) | ceph-cluster (.200) | pbs-backup (.300) | XCC |
+|---|---|---|---|---|---|
+| node-1 | 10.10.10.11 | 10.20.20.11 | 10.20.30.11 | 10.20.40.11 | 10.10.10.21 |
+| node-2 | 10.10.10.12 | 10.20.20.12 | 10.20.30.12 | 10.20.40.12 | 10.10.10.22 |
+| node-3 | 10.10.10.13 | 10.20.20.13 | 10.20.30.13 | 10.20.40.13 | 10.10.10.23 |
+| node-4 (opt) | 10.10.10.14 | 10.20.20.14 | 10.20.30.14 | 10.20.40.14 | 10.10.10.24 |
+| PBS host | 10.10.10.100 (admin) | — | — | 10.20.40.100 (backups) | per site |
 
 Switch naming: `sn5610-a` / `sn5610-b` carry the fabric (see
 [docs/diagrams/cable-diagram.svg](../../docs/diagrams/cable-diagram.svg) for the
@@ -106,8 +120,17 @@ fill that in, and every later section sources the site file:
 
 ```bash
 cp runbook/00-overview/variables.sh site-vars.sh   # once, from the track root
-set -u
-source ../../site-vars.sh   # site file at the track root — never the template
+```
+
+Every runbook block then finds the site file through `CERBERUS_TRACK` (set
+once per host — track README, "Working-directory contract") and runs as one
+fail-closed unit:
+
+```text
+( set -euo pipefail
+  source "${CERBERUS_TRACK:?export CERBERUS_TRACK=... first}/site-vars.sh"
+  ...
+)
 ```
 
 The node scripts follow the same convention: `--vars <path>`, else
@@ -122,12 +145,19 @@ Conventions:
   The host-resolved BlueField-3 / OCP interface names are intentionally
   undefined.
 - `cerberus_require_vars VAR...` fails fast if a variable is unset, empty or
-  still `PLACEHOLDER`.
+  still `PLACEHOLDER`; inside the block idiom, that stops the block.
+- `cerberus_require_secret NAME...` does the same for credential-class names
+  (`PBS_PASSWORD`, `XCC_PASSWORD`), printing names only — secrets are read
+  at run time (`read -rs`), never stored in the site file.
+- `cerberus_pbs_repository` / `cerberus_pbs_auth_id` build the one PBS
+  repository string (token form, backup VLAN) that 06 and
+  `scripts/backup-drill.sh` share.
 - `cerberus_audit_placeholders` lists everything still `PLACEHOLDER` or empty,
   every audited value (networks, gateways, IPs, PBS host, DNS, NTP) still
   identical to the template default, and any host-resolved name not yet exported.
-- Host-specific values (`BF3_P1`, `BF3_P2`, `MGMT_IF`) are resolved per node in
-  02-network §1 and exported before sourcing.
+- Host-specific values (`BF3_P1`, `BF3_P2`, `MGMT_IF`, `NODE_NUM`) are
+  resolved per node in 02-network §1 and kept in the node-local
+  `/root/cerberus-node.env`, which the blocks that need them source.
 
 Resolve the placeholders for the site **before** starting 00a. The physical
 bring-up steps need real XCC IPs; the install steps need final hostnames and IPs
@@ -138,13 +168,13 @@ bring-up steps need real XCC IPs; the install steps need final hostnames and IPs
 | Section | Title | What it produces |
 |---|---|---|
 | 00a | Physical bring-up verification | Rack/power/cabling/firmware proven good, or STOP |
-| 01 | Cluster install | PVE 9.2 on 3 nodes, `cerberus` cluster, quorum |
-| 02 | Network configuration | bonds/bridges/VLANs/MTU live on all nodes |
+| 01 | Cluster install | PVE 9.2 on 3 nodes, `cerberus` cluster, quorum; **§7 corosync link1 (required, after 02)** |
+| 02 | Network configuration | bonds/bridges/VLANs (Ceph ×2, PBS backup)/MTU live on all nodes |
 | 03 | Ceph setup | MONs/MGRs/OSDs up, Tentacle healthy |
-| 04 | Pools | RBD pools, size=3/min_size=2, autoscale on |
+| 04 | Pools | RBD pools, size=3/min_size=2, autoscale on, quota at the single-OSD-failure ceiling |
 | 05 | HA | HA rules, hardware watchdog fencing |
 | 06 | PBS | Dedicated backup host, datastores, jobs, retention |
-| 07 | Validation | Failure drills passed, acceptance sign-off |
+| 07 | Validation | Failure drills (incl. OSD loss at planned fill and the isolation/fencing drill) passed, acceptance sign-off |
 
 Reference: [docs/references.md](../../docs/references.md) — the official-doc link
 index each section leans on. Design background:

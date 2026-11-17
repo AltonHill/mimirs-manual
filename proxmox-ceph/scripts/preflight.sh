@@ -15,8 +15,14 @@
 #   4. >=2 interfaces at 200G link speed present (BlueField-3 ports)
 #   5. MTU 9000 on the 200G interfaces (WARN only at this stage —
 #      §02 sets final MTU on bond0/VLANs; net-verify.sh tests it for real)
-#   6. >=2 distinct NVMe devices (the OSD drives) — by-id symlinks are
-#      resolved to their device and de-duplicated; partitions don't count
+#   6. >=2 BLANK NVMe devices (the OSD drives). by-id symlinks are
+#      resolved to their device and de-duplicated; only a device with NO
+#      partitions and NO holders (LVM/dm/md) is counted. A device that has
+#      either is reported as present-but-NOT-counted, with the wipe step
+#      named (runbook/03-ceph Step 5a) — a used drive is not an OSD
+#      candidate until it is deliberately wiped, and the boot volume (if it
+#      presents as NVMe) must never be. Test hooks (fake-device harness
+#      only): CERBERUS_TEST_BYID_DIR, CERBERUS_TEST_SYSFS.
 #   7. storcli: NO virtual drives on the 940-8i (JBOD/raw, never HW RAID)
 #   8. Ceph NOT yet initialized (this runs before 03)
 #
@@ -80,7 +86,7 @@ echo "  [2] DNS resolves peer nodes: ${NODES[*]}"
 echo "  [3] System clock is NTP-synchronized"
 echo "  [4] At least 2 interfaces at 200G link speed (BlueField-3 ports)"
 echo "  [5] MTU ${CEPH_PUBLIC_MTU} on the 200G interfaces (WARN if not yet set)"
-echo "  [6] At least 2 distinct NVMe devices (the OSD drives)"
+echo "  [6] At least 2 BLANK NVMe devices (the OSD drives; partitioned/held devices are listed, not counted)"
 echo "  [7] storcli: no virtual drives (JBOD only)"
 echo "  [8] Ceph is NOT initialized on this host"
 echo ""
@@ -153,39 +159,54 @@ for iface in "${FAST_IFACES[@]}"; do
   fi
 done
 
-# --- [6] NVMe OSD drives -------------------------------------------------
+# --- [6] NVMe OSD drives: count BLANK devices only ---------------------
 # Each drive has SEVERAL by-id entries (eui.*, model_serial, _1 namespace
 # aliases, -partN), so counting entries passes a single drive. Resolve
-# every nvme-* symlink to its device, drop partitions, de-duplicate.
+# every nvme-* symlink to its device, drop partitions, de-duplicate. Then
+# a device counts only if it is BLANK: no partitions and no holders in
+# sysfs (/sys/block/<dev>/<dev>pN, /sys/block/<dev>/holders/*). A
+# partitioned or held device is present but NOT counted (M25 / ruled
+# 2026-11-16): it is either in use (the boot volume, if it presents as
+# NVMe) or a previously used drive that must be wiped deliberately first.
+BYID_DIR="${CERBERUS_TEST_BYID_DIR:-/dev/disk/by-id}"
+SYSFS="${CERBERUS_TEST_SYSFS:-/sys}"
 NVME_DEVS=()
 while IFS= read -r dev; do
   [ -n "$dev" ] && NVME_DEVS+=("$dev")
 done < <(
-  for l in /dev/disk/by-id/nvme-*; do
+  for l in "$BYID_DIR"/nvme-*; do
     [ -e "$l" ] || continue
     d="$(readlink -f "$l")"
-    case "$d" in
-      /dev/nvme*n*p*) continue ;;   # partition, not a device
-      /dev/nvme*n*) echo "$d" ;;
+    b="${d##*/}"
+    case "$b" in
+      nvme*n*p*) continue ;;   # partition, not a device
+      nvme*n*) echo "$b" ;;
     esac
   done | sort -u
 )
-NVME_COUNT="${#NVME_DEVS[@]}"
-if [ "$NVME_COUNT" -ge 2 ]; then
-  pass "[6] Found $NVME_COUNT distinct NVMe device(s) (BOM: 2 OSD drives/node):"
-  for d in "${NVME_DEVS[@]}"; do
-    echo "        $d  $(lsblk -dno MODEL,SIZE "$d" 2>/dev/null | tr -s ' ' || true)"
-  done
-else
-  fail "[6] Expected >=2 distinct NVMe devices, found $NVME_COUNT — check backplane cabling (direct-to-CPU x4, NOT behind the 940-8i)."
-fi
-# Advisory: a device with partitions or holders is in use (e.g. the boot
-# volume, if it presents as NVMe) or needs wiping before 03.
-for d in "${NVME_DEVS[@]}"; do
-  if [ "$(lsblk -nro NAME "$d" 2>/dev/null | wc -l)" -gt 1 ]; then
-    warn "[6] $d has partitions/holders — not a blank OSD candidate (boot volume, or wipe before 03)."
+BLANK_DEVS=()
+USED_DEVS=()
+for b in "${NVME_DEVS[@]}"; do
+  parts=0; holders=0
+  for p in "$SYSFS/block/$b/$b"p*; do [ -e "$p" ] && parts=$((parts + 1)); done
+  for h in "$SYSFS/block/$b/holders/"*; do [ -e "$h" ] && holders=$((holders + 1)); done
+  if [ "$parts" -eq 0 ] && [ "$holders" -eq 0 ]; then
+    BLANK_DEVS+=("$b")
+  else
+    USED_DEVS+=("$b (partitions: $parts, holders: $holders)")
   fi
 done
+for u in "${USED_DEVS[@]}"; do
+  warn "[6] present but NOT counted: /dev/$u — not blank. If this is a Ceph drive from an earlier build, wipe it with runbook/03-ceph Step 5a (DESTRUCTIVE; never the boot volume)."
+done
+if [ "${#BLANK_DEVS[@]}" -ge 2 ]; then
+  pass "[6] ${#BLANK_DEVS[@]} blank NVMe device(s) (BOM: 2 OSD drives/node):"
+  for b in "${BLANK_DEVS[@]}"; do
+    echo "        /dev/$b  $(lsblk -dno MODEL,SIZE "/dev/$b" 2>/dev/null | tr -s ' ' || true)"
+  done
+else
+  fail "[6] Expected >=2 BLANK NVMe devices, found ${#BLANK_DEVS[@]} blank of ${#NVME_DEVS[@]} NVMe device(s) — partitioned/held devices are listed above (wipe step: runbook/03-ceph Step 5a); if drives are missing, check backplane cabling (direct-to-CPU x4, NOT behind the 940-8i)."
+fi
 
 # --- [7] storcli: no virtual drives --------------------------------------
 if command -v storcli >/dev/null 2>&1; then

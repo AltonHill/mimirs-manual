@@ -63,8 +63,9 @@ say "== placeholder-in-command lint (bash blocks) =="
 # breaks when pasted as written: unquoted it is a redirect (`<ADMIN-NET>`
 # reads a file named ADMIN-NET), quoted it is a literal string handed to
 # a real tool (a password of "<BMC-PASSWORD>", a node named "<node>").
-# Both cases are linted: <UPPER-CASE> tokens and lower-case <tokens>
-# (`<node>`, `<bmc-ip>`, `<sha256 from §6.2>`). Use a $VARIABLE instead —
+# All cases are linted: <UPPER-CASE> tokens, lower-case <tokens>
+# (`<node>`, `<bmc-ip>`, `<sha256 from §6.2>`) and mixed-case ones
+# (`<Foo-Bar>`, `<Node IP>`). Use a $VARIABLE instead —
 # for a per-node value, `${NAME:?how to set it}` so an unset value stops
 # the command. A lower-case token may not have whitespace right before
 # its '>' (so `cat <<eof > file` is not mistaken for one).
@@ -74,15 +75,20 @@ say "== placeholder-in-command lint (bash blocks) =="
 # The reason is mandatory, and the marker is per line, never per block.
 python3 - <<'EOF'
 import re, glob
-TOKEN = re.compile(r'<[A-Z][A-Z0-9_-]*>|<[a-z](?:[^<>\n]*[^<>\s])?>')
+# Upper-case (<ADMIN-NET>), lower-case (<node>) and mixed-case (<Foo-Bar>,
+# <Node IP>) tokens. The second alternative covers all three; the first
+# is kept as the documented upper-case form.
+TOKEN = re.compile(r'<[A-Z][A-Z0-9_-]*>|<[A-Za-z](?:[^<>\n]*[^<>\s])?>')
 ALLOW = re.compile(r'#\s*lint:\s*allow-placeholder\s+\S')
 # Self-test: the lint must fire on known placeholders and stay quiet on
 # ordinary shell (heredocs, redirects, comparisons) — or the stage fails.
 MUST_HIT = ['ufw allow from <ADMIN-NET> to any port 22',
             'cmsh -c "device ; use <node> ; commit"',
-            "--fingerprint '<paste node-1 SHA256 fingerprint here>'"]
+            "--fingerprint '<paste node-1 SHA256 fingerprint here>'",
+            'ping -c 3 <Node-IP>', 'ssh root@<Foo-Bar> uptime', 'set mac <Mac Addr>']
 MUST_PASS = ['cat > /etc/x <<EOF', 'cat <<eof > /etc/x', 'cmd 2>&1 | tee log',
-             '[ "$a" -lt 3 ] && echo ok', 'chronyc tracking   # Stratum <= 4']
+             '[ "$a" -lt 3 ] && echo ok', 'chronyc tracking   # Stratum <= 4',
+             'cat <<EOF >"$TMP"', 'diff <(sort a) <(sort b)']
 bad = [t for t in MUST_HIT if not TOKEN.search(t)] + \
       [t for t in MUST_PASS if TOKEN.search(t)]
 if bad:
@@ -106,7 +112,7 @@ for fn in sorted(glob.glob("*.md")):
 for h in hits:
     print(f"PLACEHOLDER-IN-COMMAND {h}")
 print(f"lint: {len(hits)} hit(s), {allowed} allowlisted line(s) "
-      f"(upper- and lower-case <...> tokens; self-test OK)")
+      f"(upper-, lower- and mixed-case <...> tokens; self-test OK)")
 exit(1 if hits else 0)
 EOF
 [ $? -ne 0 ] && fail=1

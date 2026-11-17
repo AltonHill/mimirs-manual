@@ -17,15 +17,34 @@ the node's shell) and is reported in the render output with its occurrence
 count — a blank value in a deliverable is how a rendered config loses its
 interface names.
 
+Credentials are NEVER substituted (H6 doctrine, ported from the BCM
+track's runbook.py — "credentials never appear in a deliverable,
+placeholder or real"). Any name matching the credential class
+(*PASSWORD*, *API_KEY*, *TOKEN*, *SECRET*, *PRODUCT_KEY*, *LICENSE_KEY*;
+case-insensitive) keeps its $NAME / ${NAME} reference in the rendered
+guide, for the operator's shell to expand at run time, and nested
+expansion never resolves one either. Every render prints the kept names.
+Tripwire (ruled 2026-11-16, M4 slate #4):
+  - a credential-class name that holds a LIVE value (not empty, not
+    PLACEHOLDER, no <...> token, not pure $-indirection) in the variables
+    FILE -> render REFUSES (exit 3) before writing anything: a live secret
+    sits in the file the deliverable is built from;
+  - a live value held only in the ENVIRONMENT (the sanctioned pattern —
+    `read -rs PBS_PASSWORD; export PBS_PASSWORD`) -> loud warning, names
+    only, render continues (the guide never sees the value either way).
+The live case today is the PBS token secret (PBS_PASSWORD, 06.5): it
+belongs in the site's secrets vault, never in site-vars.sh.
+
 Usage:
     scripts/render.py --out site-docs/
     scripts/render.py --vars /path/to/variables.sh --out site-docs/ [--force]
 
 The template docs are never modified; render always writes a fresh directory.
 The render report lists: values still literally PLACEHOLDER; defined-but-
-empty names (passed through, never blanked); and every audited value
-(networks, gateways, IPs, PBS host, DNS, NTP) still identical to the shipped
-template default in runbook/00-overview/variables.sh.
+empty names (passed through, never blanked); the credential-class names kept
+as references; and every audited value (networks, gateways, IPs, PBS host,
+DNS, NTP, the mail target, the pool sizing, the XCC login name) still
+identical to the shipped template default in runbook/00-overview/variables.sh.
 """
 
 import argparse
@@ -38,6 +57,29 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TRACK_DIR = os.path.dirname(SCRIPT_DIR)
 DEFAULT_VARS = os.path.join(TRACK_DIR, "runbook", "00-overview", "variables.sh")
 RUNBOOK_DIR = os.path.join(TRACK_DIR, "runbook")
+
+
+# H6 / I5: the credential class, shared with the BCM track's runbook.py
+# (same patterns, same case-insensitive match — a match only ever keeps a
+# $NAME reference, so over-matching fails safe).
+CREDENTIAL_PATTERNS = ("PASSWORD", "API_KEY", "TOKEN", "SECRET",
+                       "PRODUCT_KEY", "LICENSE_KEY")
+CREDENTIAL_CLASS_RE = re.compile("|".join(CREDENTIAL_PATTERNS), re.I)
+CREDENTIAL_CLASS_TEXT = "/".join(f"*{p}*" for p in CREDENTIAL_PATTERNS)
+REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def is_credential_class(name):
+    return bool(CREDENTIAL_CLASS_RE.search(name))
+
+
+def is_placeholder_value(value):
+    """True if a value is NOT a live secret: empty, the literal PLACEHOLDER,
+    a <PLACEHOLDER> token anywhere in it, or pure shell indirection ($VAR,
+    ${VAR...}, $(cmd)) resolved by the operator's shell at run time."""
+    v = (value or "").strip()
+    return (not v) or v == "PLACEHOLDER" or bool(re.search(r"<[^<>]+>", v)) \
+        or v.startswith("$")
 
 
 def parse_variables(path):
@@ -68,7 +110,11 @@ def parse_variables(path):
         for k, v in list(values.items()):
             def repl(m, _v=values):
                 name = m.group(1) or m.group(2)
-                # never expand to an empty string (same rule as substitute)
+                # never resolve a credential reference (FOO="$PBS_PASSWORD"
+                # must not smuggle a secret into the render), and never
+                # expand to an empty string (same rules as substitute)
+                if is_credential_class(name):
+                    return m.group(0)
                 return _v.get(name) or m.group(0)
             new = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", repl, v)
             if new != v:
@@ -91,8 +137,10 @@ def substitute(text, values, passed=None):
     """
     if passed is None:
         passed = {}
-    subst = {k: v for k, v in values.items() if v != ""}
-    empty = {k for k, v in values.items() if v == ""}
+    subst = {k: v for k, v in values.items()
+             if v != "" and not is_credential_class(k)}
+    empty = {k for k, v in values.items()
+             if v == "" and not is_credential_class(k)}
 
     def keep(name, original):
         passed[name] = passed.get(name, 0) + 1
@@ -101,13 +149,16 @@ def substitute(text, values, passed=None):
     # ${VAR} not followed by :- or :=
     def braced(m):
         name = m.group(1)
+        if is_credential_class(name):
+            return m.group(0)          # credentials: never substituted
         if name in empty:
             return keep(name, m.group(0))
         return subst.get(name, m.group(0))
     text = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![:-])", braced, text)
 
     # $VAR (bare) — word boundary, not followed by identifier chars
-    names = sorted(values, key=len, reverse=True)
+    names = sorted((n for n in values if not is_credential_class(n)),
+                   key=len, reverse=True)
     if names:
         pat = re.compile(r"\$(" + "|".join(re.escape(n) for n in names) + r")(?![A-Za-z0-9_])")
 
@@ -124,8 +175,12 @@ def substitute(text, values, passed=None):
 # because the template's defaults are plausible-looking addresses, not the
 # string PLACEHOLDER — a site file that never changed them would otherwise
 # pass as "filled". Audited classes: networks, gateways, IPs, PBS host,
-# DNS, NTP.
-AUDITED_RE = re.compile(r"(_NET|_GW|_IP|_IPS)$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS)$")
+# DNS, NTP — plus (M5) the mail target, the pool sizing pair and the XCC
+# login name, whose shipped values are just as plausible-looking:
+# ops@example.com, 3T / 3.3 TB (correct only for the reference drives),
+# USERID (Lenovo's factory login).
+AUDITED_RE = re.compile(r"(_NET|_GW|_IP|_IPS)$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS"
+                        r"|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER)$")
 
 
 def audit_against_template(values, template_values):
@@ -133,6 +188,17 @@ def audit_against_template(values, template_values):
     return sorted(n for n, v in values.items()
                   if AUDITED_RE.search(n) and n in template_values
                   and v != "" and v == template_values[n])
+
+
+def credential_tripwire(values, doc_refs, environ):
+    """(file_live, env_live): credential-class names holding a live value
+    in the variables file / in the environment. Names only."""
+    file_live = sorted(n for n, v in values.items()
+                       if is_credential_class(n) and not is_placeholder_value(v))
+    candidates = {n for n in values if is_credential_class(n)} | set(doc_refs)
+    env_live = sorted(n for n in candidates
+                      if n in environ and not is_placeholder_value(environ[n]))
+    return file_live, env_live
 
 
 def main():
@@ -146,22 +212,54 @@ def main():
         sys.exit(f"variables file not found: {args.vars}")
     values = parse_variables(args.vars)
 
+    sections = sorted(d for d in os.listdir(RUNBOOK_DIR)
+                      if os.path.isdir(os.path.join(RUNBOOK_DIR, d)))
+    texts = {}
+    for section in sections:
+        src = os.path.join(RUNBOOK_DIR, section, "README.md")
+        if os.path.isfile(src):
+            with open(src) as f:
+                texts[section] = f.read()
+    doc_refs = sorted({(m.group(1) or m.group(2)) for t in texts.values()
+                       for m in REF_RE.finditer(t)
+                       if is_credential_class(m.group(1) or m.group(2))})
+    kept = sorted(set(doc_refs) | {n for n in values if is_credential_class(n)})
+
+    # Tripwire BEFORE anything is written.
+    file_live, env_live = credential_tripwire(values, doc_refs, os.environ)
+    if file_live:
+        bar = "!" * 72
+        print(bar, file=sys.stderr)
+        print("!! REFUSED: LIVE SECRETS IN THE VARIABLES FILE", file=sys.stderr)
+        for n in file_live:
+            print(f"!!   {n}: holds a real value in {args.vars}", file=sys.stderr)
+        print("!! A deliverable is built from this file. Move the secret to the", file=sys.stderr)
+        print("!! site's secrets vault (read it at run time: read -rs NAME; export", file=sys.stderr)
+        print("!! NAME) and leave the name out of the file. Nothing was written.", file=sys.stderr)
+        print(bar, file=sys.stderr)
+        return 3
+    if env_live:
+        bar = "!" * 72
+        print(bar, file=sys.stderr)
+        print("!! WARNING: LIVE SECRETS LOADED NEAR A DELIVERABLE (environment)", file=sys.stderr)
+        for n in env_live:
+            print(f"!!   {n}: holds a real value (environment)", file=sys.stderr)
+        print("!! The rendered guide was NOT given these values — it keeps the", file=sys.stderr)
+        print("!! $NAME references. Unset them in this shell when you are done.", file=sys.stderr)
+        print(bar, file=sys.stderr)
+
     if os.path.exists(args.out):
         if not args.force:
             sys.exit(f"refusing to overwrite existing {args.out} (use --force)")
         shutil.rmtree(args.out)
     os.makedirs(args.out)
 
-    sections = sorted(d for d in os.listdir(RUNBOOK_DIR)
-                      if os.path.isdir(os.path.join(RUNBOOK_DIR, d)))
     rendered = 0
     passed = {}
     for section in sections:
-        src = os.path.join(RUNBOOK_DIR, section, "README.md")
-        if not os.path.isfile(src):
+        if section not in texts:
             continue
-        with open(src) as f:
-            text = f.read()
+        text = texts[section]
         out_dir = os.path.join(args.out, "runbook", section)
         os.makedirs(out_dir)
         with open(os.path.join(out_dir, "README.md"), "w") as f:
@@ -170,13 +268,17 @@ def main():
 
     # Report: literal PLACEHOLDER, defined-but-empty (passed through), and
     # audited values still identical to the shipped template defaults.
-    placeholder = sorted(n for n, v in values.items() if v == "PLACEHOLDER")
-    empty = sorted(n for n, v in values.items() if v == "")
+    placeholder = sorted(n for n, v in values.items()
+                         if v == "PLACEHOLDER" and not is_credential_class(n))
+    empty = sorted(n for n, v in values.items()
+                   if v == "" and not is_credential_class(n))
     template = parse_variables(DEFAULT_VARS)
     same = audit_against_template(values, template)
     is_template = os.path.realpath(args.vars) == os.path.realpath(DEFAULT_VARS)
     print(f"rendered {rendered} sections -> {args.out}/")
     print(f"variables read: {len(values)} from {args.vars}")
+    print(f"credential-class names kept as $NAME, never substituted "
+          f"({CREDENTIAL_CLASS_TEXT}): {', '.join(kept) if kept else '(none)'}")
     if is_template:
         print("NOTE: rendering the TEMPLATE itself (no site file) — every audited "
               "value below is a template default by definition.")

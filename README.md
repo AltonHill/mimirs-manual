@@ -82,8 +82,8 @@ nvim bcm/00-variables.sh && source bcm/00-variables.sh
 bcm/scripts/runbook.py vars          # fails on placeholders + K8s CIDR overlap; reports shipped defaults
 bcm/scripts/check.sh --site          # on site: every stage but the leak scan — green = exit 0
 # bcm/scripts/check.sh               # publisher mode: + leak scan (out-of-repo deny-list; exit 2 without it)
-bash proxmox-ceph/scripts/check.sh   # currently RED (exit 1): known placeholder-in-command
-                                     # content in the runbook docs — see proxmox-ceph/README.md
+bash proxmox-ceph/scripts/check.sh   # green = exit 0 (doc-block bash -n, placeholder + paste-atomicity
+                                     # lints, render smoke + credential tripwire)
 bash proxmox-ceph/scripts/preflight.sh --dry-run
 
 # 4. Render the site-specific guide — always built, it's a final deliverable
@@ -112,11 +112,13 @@ Both tracks were built to the same contract, so they line up:
   *publisher* mode runs every stage and exits 2 (never green) without
   the out-of-repo leak deny-list; `--site` runs every stage except the
   leak scan, so a teammate on site gets a meaningful 0/1.
-  `proxmox-ceph/scripts/check.sh` is **red** today. It fails on known
-  `<placeholder>`-in-command content in the Cerberus runbook docs (its
-  doc-block `bash -n` and placeholder-lint stages list every hit). Until
-  it is green, treat the blocks it names as not paste-safe. Cerberus
-  scripts are idempotent with `--dry-run` and confirmation prompts.
+  `proxmox-ceph/scripts/check.sh` is **green** too: doc-block `bash -n`,
+  the placeholder lint, a paste-atomicity lint (every state block is one
+  fail-closed `( set -euo pipefail … )` unit that finds the site file
+  through `CERBERUS_TRACK`, never a relative path), the render smoke test
+  and blank-interface scan, and the credential tripwire (render refuses a
+  live secret in the site file). Cerberus scripts are idempotent with
+  `--dry-run` and confirmation prompts.
 - **Docs are deliverables** — each track renders its site-specific MD guide
   (`bcm/scripts/runbook.py render`, `proxmox-ceph/scripts/render.py`);
   the Proxmox track also ships a customer-facing design brief
