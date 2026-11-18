@@ -2,7 +2,10 @@
 # check.sh — validate the whole template: bash syntax, placeholder-in-
 # command lint, YAML parse, disksetup by-path guard, Python compile,
 # template-variable sanity, dangling-reference lint (scripts/reflint.py),
-# Kubernetes CIDR guard, identifier leak scan
+# front door + docs/ lint (bash -n, placeholders, file references — M8
+# R2), Kubernetes CIDR guard, cross-track IP guard (scripts/crosstrack.py:
+# the templates, a self-test, and the site pair when both site files
+# exist — M8 R1), identifier leak scan
 # (deny-list read from $MIMIRS_DENYLIST, default
 # ~/.config/mimirs-manual/leak-denylist.txt — kept outside the repo).
 # CHECK_VARS=<file> points the CIDR guard at a site copy of the
@@ -42,11 +45,13 @@ if [ "$site_mode" -eq 1 ]; then
     say "### SITE MODE — all stages except the identifier leak scan (publisher-only)"
 fi
 
-say "== bash -n on all code blocks =="
-python3 - <<'EOF'
-import re, subprocess, tempfile, os, glob
+# bash_n_blocks FILE... — bash -n on every ```bash/```sh fence in FILEs.
+# One function for the track's docs and (M8 R2) the front door + docs/.
+bash_n_blocks() {
+python3 - "$@" <<'EOF'
+import re, subprocess, tempfile, os, sys
 fails = 0
-for fn in sorted(glob.glob("*.md")):
+for fn in sys.argv[1:]:
     for m in re.finditer(r'```(bash|sh)\n(.*?)```', open(fn).read(), re.S):
         with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as t:
             t.write(m.group(2)); tname = t.name
@@ -55,10 +60,13 @@ for fn in sorted(glob.glob("*.md")):
         if r.returncode != 0:
             fails += 1
             print(f"BASH-FAIL {fn}: {r.stderr.strip()[:120]}")
-print(f"bash: {fails} failures")
+print(f"bash: {fails} failures ({len(sys.argv) - 1} files)")
 exit(1 if fails else 0)
 EOF
-[ $? -ne 0 ] && fail=1
+}
+
+say "== bash -n on all code blocks =="
+bash_n_blocks *.md || fail=1
 
 say "== placeholder-in-command lint (bash blocks) =="
 # A <placeholder> token inside a ```bash/```sh fence is a command that
@@ -75,8 +83,11 @@ say "== placeholder-in-command lint (bash blocks) =="
 # ALLOWLIST CONVENTION — for a legitimate construct, end the line with
 #     # lint: allow-placeholder <why>
 # The reason is mandatory, and the marker is per line, never per block.
-python3 - <<'EOF'
-import re, glob
+# placeholder_lint FILE... — one function for the track's docs and (M8 R2)
+# the front door + docs/.
+placeholder_lint() {
+python3 - "$@" <<'EOF'
+import re, sys
 # Upper-case (<ADMIN-NET>), lower-case (<node>) and mixed-case (<Foo-Bar>,
 # <Node IP>) tokens. The second alternative covers all three; the first
 # is kept as the documented upper-case form.
@@ -97,7 +108,7 @@ if bad:
     print("LINT SELF-TEST FAILED:", bad)
     exit(1)
 hits, allowed = [], 0
-for fn in sorted(glob.glob("*.md")):
+for fn in sys.argv[1:]:
     text = open(fn).read()
     for m in re.finditer(r'```(bash|sh)\n(.*?)```', text, re.S):
         first = text.count("\n", 0, m.start(2)) + 1
@@ -113,11 +124,12 @@ for fn in sorted(glob.glob("*.md")):
             hits.append(f"{fn}:{first + i}: {' '.join(toks)}  |  {line.strip()[:110]}")
 for h in hits:
     print(f"PLACEHOLDER-IN-COMMAND {h}")
-print(f"lint: {len(hits)} hit(s), {allowed} allowlisted line(s) "
+print(f"lint: {len(hits)} hit(s), {allowed} allowlisted line(s) in {len(sys.argv) - 1} files "
       f"(upper-, lower- and mixed-case <...> tokens; self-test OK)")
 exit(1 if hits else 0)
 EOF
-[ $? -ne 0 ] && fail=1
+}
+placeholder_lint *.md || fail=1
 
 say "== YAML parse on all code blocks =="
 # L3: PyYAML is the one non-stdlib dependency of this gate. Without it the
@@ -227,6 +239,19 @@ say "== dangling-reference lint (sections, files, passes, ranges) =="
 # something that exists. Self-tested inside scripts/reflint.py.
 python3 scripts/reflint.py || fail=1
 
+say "== front door + docs/ lint (bash -n, placeholders, file references) =="
+# Ruled M8 R2: the library's front door (README.md at the repo root) and
+# everything under docs/ belong to neither track, so neither track's doc
+# stages saw them. This gate takes them: the same bash -n and placeholder
+# lint as the track's docs (the functions above), and reflint.py --docs
+# for file names, pass names and pass lists (section numbers stay with
+# each track's own scan — a front-door line may cite either track).
+FRONT=(../README.md)
+while IFS= read -r f; do FRONT+=("$f"); done < <(find ../docs -name '*.md' | sort)
+bash_n_blocks "${FRONT[@]}" || fail=1
+placeholder_lint "${FRONT[@]}" || fail=1
+python3 scripts/reflint.py --docs "${FRONT[@]}" || fail=1
+
 say "== Kubernetes CIDR guard =="
 # Fails closed (C1): each K8s net/mask must be a valid network address,
 # and neither K8s range may overlap a site network, a DNS host, the admin
@@ -256,6 +281,42 @@ print(summary)
 sys.exit(1 if errs else 0)
 EOF
 [ $? -ne 0 ] && fail=1
+
+say "== cross-track IP guard (BCM <-> Cerberus) =="
+# Ruled M8 R1: one site's two plans must not collide. scripts/crosstrack.py
+# (the M7 comparison, now in the repo) reads each file with its own
+# track's parser and fails on any overlap between the BCM networks, admin
+# ranges, K8s ranges and DNS hosts and the Cerberus MGMT / Ceph / PBS
+# networks, host addresses and DNS servers (one resolver shared by both
+# tracks is not a collision). Three runs, each fail-closed:
+#   1. the shipped templates — must be clean;
+#   2. self-test — a planted overlap (Cerberus MGMT_NET = the BCM
+#      template's NET_PROVISION, written as a plain NAME="value") must fire;
+#   3. the SITE pair — only when BOTH site files exist (bcm/site-vars.sh,
+#      proxmox-ceph/site-vars.sh; CROSSTRACK_BCM / CROSSTRACK_CERBERUS name
+#      others). Either one absent: SKIPPED, said so, not failed.
+CERB_TEMPLATE=../proxmox-ceph/runbook/00-overview/variables.sh
+python3 scripts/crosstrack.py 00-variables.sh "$CERB_TEMPLATE" || fail=1
+XT="$(mktemp -d)"
+prov="$(sed -n 's/^export NET_PROVISION="\([^"]*\)".*/\1/p' 00-variables.sh)"
+{ cat "$CERB_TEMPLATE"; printf 'MGMT_NET="%s"\n' "$prov"; } > "$XT/planted.sh"
+xt_out="$(python3 scripts/crosstrack.py 00-variables.sh "$XT/planted.sh" 2>&1)"; rc=$?
+rm -rf "$XT"
+if [ "$rc" -eq 1 ] && grep -q "^CROSSTRACK-OVERLAP BCM NET_PROVISION $prov  <->  Cerberus MGMT_NET" <<<"$xt_out"; then
+    say "crosstrack self-test: planted overlap (MGMT_NET = NET_PROVISION $prov) caught"
+else
+    say "CROSSTRACK SELF-TEST FAILED: a planted overlap was not caught (rc=$rc)"; fail=1
+fi
+XT_BCM="${CROSSTRACK_BCM:-site-vars.sh}"
+XT_CERB="${CROSSTRACK_CERBERUS:-../proxmox-ceph/site-vars.sh}"
+if [ -f "$XT_BCM" ] && [ -f "$XT_CERB" ]; then
+    python3 scripts/crosstrack.py "$XT_BCM" "$XT_CERB" || fail=1
+else
+    missing_xt=""
+    [ -f "$XT_BCM" ] || missing_xt="$missing_xt $XT_BCM"
+    [ -f "$XT_CERB" ] || missing_xt="$missing_xt $XT_CERB"
+    say "crosstrack site pair: SKIPPED — not both site files present (absent, relative to bcm/:$missing_xt); the templates are checked above"
+fi
 
 leak_notrun=0
 if [ "$site_mode" -eq 1 ]; then
@@ -390,7 +451,35 @@ grep -q '^TEMPLATE DEFAULTS still in place' <<<"$vars_out" \
     || sfail "vars pass: template-default audit missing on the template"
 grep -q '^  DOMAIN=' <<<"$vars_out" || sfail "vars pass: audit does not list DOMAIN on the template"
 grep -q '^cidr guard: service' <<<"$vars_out" || sfail "vars pass: CIDR guard not run"
-sed 's|^export DOMAIN=.*|export DOMAIN="smoke-site.test"|' 00-variables.sh > "$SMOKE/dom-vars.sh"
+# R4a (M8): DHCP_POOL is the 01 sign-off. On the template (the publisher's
+# check) it is a NOTE; a site file with it empty or unset FAILS, naming
+# it; filled, the same file passes.
+grep -q '^NOTE: DHCP_POOL is empty in the template by design' <<<"$vars_out" \
+    || sfail "vars pass R4a: no DHCP_POOL note on the template"
+cp 00-variables.sh "$SMOKE/dhcp-empty.sh"
+grep -v '^export DHCP_POOL=' 00-variables.sh > "$SMOKE/dhcp-unset.sh"
+for f in dhcp-empty dhcp-unset; do
+    d_out="$(./scripts/runbook.py --vars "$SMOKE/$f.sh" vars 2>&1)"; rc=$?
+    { [ "$rc" -eq 1 ] && grep -q '^missing variables: DHCP_POOL$' <<<"$d_out" \
+        && grep -q '^DHCP_POOL is required for the site' <<<"$d_out"; } \
+        || sfail "vars pass R4a: a site file with DHCP_POOL ${f#dhcp-} was not failed by name (rc=$rc)"
+done
+sed 's|^export DHCP_POOL=.*|export DHCP_POOL="10.10.15.200-10.10.15.250"|' 00-variables.sh > "$SMOKE/dhcp-filled.sh"
+./scripts/runbook.py --vars "$SMOKE/dhcp-filled.sh" vars >/dev/null 2>&1 \
+    || sfail "vars pass R4a: a site file with DHCP_POOL filled was failed"
+# R4b / R5 (M8): DHCP_POOL, BCM_HA_VIP, HELM_VERSION, RUNAI_UTILS_COMMIT are
+# template variables and join the template-default audit (each ships
+# empty, so the audit fires once a default ships — proven here on a
+# value equal to its "default"); the blocks no longer set the pins locally.
+python3 -c 'import sys; sys.path.insert(0, "scripts"); import runbook as r
+names = ("DHCP_POOL", "BCM_HA_VIP", "HELM_VERSION", "RUNAI_UTILS_COMMIT")
+tmpl = r.load_vars("00-variables.sh"); v = {n: "same-as-default" for n in names}
+sys.exit(0 if all(n in tmpl for n in names) and set(r.template_default_audit(v, v)) == set(names) else 1)' \
+    || sfail "vars pass R4b/R5: a new variable is missing from the template or the template-default audit"
+grep -nE '^[[:space:]]*(HELM_VERSION|RUNAI_UTILS_COMMIT)=' ./*.md \
+    && sfail "R5: a block still sets HELM_VERSION / RUNAI_UTILS_COMMIT locally"
+sed -e 's|^export DOMAIN=.*|export DOMAIN="smoke-site.test"|' \
+    -e 's|^export DHCP_POOL=.*|export DHCP_POOL="10.10.15.200-10.10.15.250"|' 00-variables.sh > "$SMOKE/dom-vars.sh"
 dom_out="$(./scripts/runbook.py --vars "$SMOKE/dom-vars.sh" vars 2>&1)" || sfail "vars pass: a DOMAIN-only edit fails"
 grep -q '^  DOMAIN=' <<<"$dom_out" && sfail "vars pass: audit lists a value that differs from the template"
 grep -q '^  NFS_SERVER=' <<<"$dom_out" || sfail "vars pass: audit lost an unchanged value"

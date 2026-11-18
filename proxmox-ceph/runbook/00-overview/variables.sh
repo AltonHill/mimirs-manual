@@ -276,8 +276,8 @@ cerberus_check_fingerprint() {
 # Reports:
 #   - anything still PLACEHOLDER or empty;
 #   - every audited value (networks, gateways, IPs, PBS host, DNS, NTP,
-#     the mail target, the pool sizing, the XCC login name) still
-#     identical to its template default;
+#     the mail target, the pool sizing, the XCC login name, the PBS
+#     datastore path) still identical to its template default;
 #   - the host-resolved names (must be exported per node).
 # Template path: $CERBERUS_TEMPLATE, else found relative to this file
 # (works from the template itself or from <track>/site-vars.sh).
@@ -313,7 +313,7 @@ cerberus_audit_placeholders() {
         fi
     done < <(env -i bash --noprofile --norc -c '
         source "$1" >/dev/null 2>&1 || exit 2
-        compgen -v | grep -E "(_NET|_GW|_IP|_IPS)\$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER)\$" \
+        compgen -v | grep -E "(_NET|_GW|_IP|_IPS)\$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER|PBS_DATASTORE_PATH)\$" \
           | grep -vE "^(BASH|COMP|HOST|MACH|OS|PPID|UID|EUID)" | sort \
           | while read -r n; do printf "%s=%s\n" "$n" "${!n}"; done' _ "$tmpl")
     echo "--- host-resolved (must be exported per node; undefined in the template) ---"

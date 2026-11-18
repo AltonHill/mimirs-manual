@@ -91,7 +91,8 @@ Required forward + reverse records (generate from your plan):
 
 Reserve static addresses **outside** the DHCP pool, or explicitly exclude
 them. Record the pool as `DHCP_POOL` (`FIRST-LAST`) in `site-vars.sh` —
-it ships empty, and 01 does not sign off until it is set. The client
+it ships empty, and 01 does not sign off until it is set
+(`scripts/runbook.py vars` fails a site file that leaves it empty). The client
 plan had statics (`.50–.55`) overlapping the pool (`.50–.150`) — don't
 repeat that.
 

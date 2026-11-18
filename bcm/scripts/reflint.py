@@ -33,6 +33,12 @@ names on purpose), bcm/00-variables.sh, bcm/scripts/*.py (this file
 excluded: its self-test plants bad references), and the front-door
 README.md for its bcm/ paths and pass names.
 
+`reflint.py --docs FILE...` (M8 R2; bcm/scripts/check.sh runs it on the
+front-door README.md and docs/**/*.md) checks file names, pass names and
+pass lists on every line of the files given — a pass list wrapped across
+lines included (the same WRAP_RE pass as the track scan) — but not
+section numbers or ranges, which belong to each track's own scan.
+
 Self-tested: before scanning, the lint must fire on planted dangling
 references and stay quiet on the version strings above, or it fails.
 A line may opt out with the marker `reflint: allow <reason>` (reason
@@ -55,6 +61,7 @@ SITE_FILES = {
     "passwords.csv", "provision-nodes.sh", "create-users.sh", "burn.py",
     "gpu-burnin.yaml", "vitals-hosts.csv",
     "technitium-install.sh",   # 14.2: the vendor installer, downloaded and read before running (L10)
+    "hosts.csv",               # dgx-vitals' host list, from its hosts.example.csv (front door)
 }
 # Files shipped elsewhere (the separate anonymizer pack).
 EXTERNAL_FILES = {"anonymize.py"}
@@ -129,7 +136,7 @@ def check_line(line, where, ctx):
         return out
     if ctx["md"] and re.match(r"^#{1,4}\s", line):
         return out                    # a heading defines, it doesn't refer
-    for m in SEC_RE.finditer(line):
+    for m in ([] if ctx.get("docs") else SEC_RE.finditer(line)):
         major = int(m.group(2))
         if not 1 <= major <= ctx["last"]:
             continue
@@ -158,7 +165,7 @@ def check_line(line, where, ctx):
         if m.group(1) not in ctx["passes"]:
             out.append(f"{where}: pass `{m.group(1)}` — runbook.py defines no such pass")
     out += list_problems(line, where, ctx)
-    for m in RANGE_RE.finditer(line):
+    for m in ([] if ctx.get("docs") else RANGE_RE.finditer(line)):
         lo, hi = int(m.group(1)), int(m.group(2))
         if hi > ctx["last"] or lo > hi or (lo == 1 and hi != ctx["last"]):
             out.append(f"{where}: section range {m.group(1)}–{m.group(2)} — the "
@@ -193,7 +200,64 @@ def self_test(ctx):
     return bad
 
 
+def docs_main(files):
+    """--docs mode (M8 R2): the front door and docs/** — files the track
+    scans do not own. Same file-name, pass-name and pass-list checks as the
+    track scan, on EVERY line — and on a pass list wrapped across lines
+    (the same WRAP_RE pass the track scan uses); section numbers and
+    section ranges are skipped, because a front-door line may cite either
+    track's sections and the BCM heading index cannot judge a Cerberus one
+    (each track's scan checks its own). Self-tested like the track scan."""
+    repo = REPO
+    names = {f for _, _, fs in os.walk(repo) for f in fs}
+    ctx = {"heads": set(), "passes": passes_defined(TRACK), "last": 0,
+           "repo_names": names, "docs": True, "md": True,
+           # the front door names paths relative to either track's root
+           "base_dirs": [repo, TRACK, os.path.join(TRACK, "scripts"),
+                         os.path.join(repo, "proxmox-ceph")]}
+    st = [t for t in ("see docs/no-such-checklist.md", "scripts/runbook.py imagez --dry-run",
+                      "the runner composes (`vars`, `networks`,\n"
+                      "`images`, `renderz`, `users`) in order")
+          if not check_line(t, "self-test", ctx)]
+    st += [t for t in ("see docs/verification-checklist.md", "BCM 03.5 and Cerberus 06.5",
+                       "cp bcm/00-variables.sh bcm/site-vars.sh",
+                       # the real 8-pass list wrapped across lines: all
+                       # primary passes named, must pass clean
+                       "runbook job (`vars`, `networks`, `images`, `disklayouts`, `nodes`,\n"
+                       "`storage`, `users`, `render` — plus the read-only `layoutgate` fleet\ngate)")
+           if check_line(t, "self-test", ctx)]
+    if st:
+        print(f"REFLINT --docs SELF-TEST FAILED: {st}")
+        return 1
+    problems = []
+    for fn in files:
+        rel = os.path.relpath(os.path.abspath(fn), repo)
+        lctx = dict(ctx, base_dirs=[os.path.dirname(os.path.abspath(fn))] + ctx["base_dirs"])
+        text = open(fn, encoding="utf-8").read()
+        lines = text.splitlines()
+        for n, line in enumerate(lines, 1):
+            problems += check_line(line, f"{rel}:{n}", lctx)
+        # The line scan above cannot see a pass list wrapped across lines
+        # (LIST_RE is one-line only): check each paren group a line break
+        # splits, reported at its opening line.
+        for m in WRAP_RE.finditer(text):
+            n = text.count("\n", 0, m.start())
+            span, open_line = m.group(0), lines[n]
+            if ALLOW.search(span) or ALLOW.search(open_line):
+                continue
+            if lctx["md"] and re.match(r"^#{1,4}\s", open_line):
+                continue              # a heading defines, it doesn't refer
+            problems += list_problems(span, f"{rel}:{n + 1}", lctx)
+    for p in problems:
+        print(f"DANGLING-REF {p}")
+    print(f"reflint --docs: {len(problems)} dangling reference(s) in {len(files)} files "
+          f"(file names, pass names, pass lists; self-test OK)")
+    return 1 if problems else 0
+
+
 def main(argv):
+    if len(argv) > 1 and argv[1] == "--docs":
+        return docs_main(argv[2:])
     track = os.path.abspath(argv[1]) if len(argv) > 1 else TRACK
     repo = os.path.dirname(track)
     heads, files = section_headings(track)

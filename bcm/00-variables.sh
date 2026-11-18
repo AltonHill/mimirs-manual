@@ -30,9 +30,10 @@ export GW_USER="10.10.13.1"
 export NET_OOB="10.10.16.0/24"            # OOB / hardware management
 export GW_OOB="10.10.16.1"
 # The site DHCP pool on the provisioning network, "FIRST-LAST" (01 "DHCP").
-# Every static address in 01 must sit outside it. Empty = not decided yet
-# (01's sign-off needs it). No default on purpose: at fleet scale the
-# statics run well past any guessed range.
+# Every static address in 01 must sit outside it. Empty = not decided yet:
+# `scripts/runbook.py vars` FAILS a site file while it is empty (01's
+# sign-off). No default on purpose: at fleet scale the statics run well
+# past any guessed range.
 export DHCP_POOL=""
 # BCM HA only (13): the external virtual IP that reaches the ACTIVE head
 # node. Empty = the site does not run BCM HA.
@@ -142,6 +143,15 @@ export PG_PASSWORD="${PG_PASSWORD:-<POSTGRES-PASSWORD>}"
 # --- Versions (known-working baseline; the reference list is the 08.3 field note) ---
 export BCM_VERSION="11"
 export K8S_VERSION="1.34"
+# Site pins (M8 R5 — moved here from the 14.1 and 02 blocks, which used to
+# set them block-locally). Both ship EMPTY: the blocks never had a value,
+# only a stop-if-unset guard, and that guard still stops them until the
+# site file sets one. The helm release for 14.1's tooling (match the plan
+# in 10; the bare version, no leading "v"):
+export HELM_VERSION=""
+# The reviewed commit of the Run:ai professional-services utilities (02):
+# the full hash you read with `git log` before trusting it; record it in 10.
+export RUNAI_UTILS_COMMIT=""
 export RUNAI_VERSION="2.26.x"
 export GPU_OPERATOR_VERSION="v26.3.1"
 export NET_OPERATOR_VERSION="26.1.1"

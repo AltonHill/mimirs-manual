@@ -159,7 +159,7 @@ curl -fLO "https://dl.k8s.io/release/v${K8S_VERSION}.0/bin/linux/amd64/kubectl"
 curl -fLO "https://dl.k8s.io/release/v${K8S_VERSION}.0/bin/linux/amd64/kubectl.sha256"
 echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
 install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-HELM_VERSION="${HELM_VERSION:?set HELM_VERSION to the helm release for this cluster, e.g. from the plan in 10}"
+: "${HELM_VERSION:?set HELM_VERSION in site-vars.sh (the helm release from the plan in 10), then source it}"
 curl -fLO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
 curl -fLO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
 sha256sum --check "helm-v${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"

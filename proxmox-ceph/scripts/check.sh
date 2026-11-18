@@ -15,6 +15,9 @@
 #   5b. customer design brief: .md / .docx / .pdf agree (docs/build-briefs.py
 #      --verify; FAILS without pdftotext — ruled fail-closed, M7 #5)
 #   5c. python compile check on render.py, reflint.py, build-briefs.py (in memory)
+#   5d. Python grammar floor (M8 R10): every Cerberus Python file parses
+#      with ast.parse(feature_version=(3, 8)) — the declared 3.8+ floor
+#      (self-tested on a 3.10 `match` statement)
 #   6. render smoke test (renders to a temp dir, verifies substitution);
 #      site-file default (no site file -> exit 2; template only when named,
 #      with the NOTE); links resolve inside the deliverable; --force only
@@ -27,9 +30,10 @@
 #      are never substituted; a live secret in the variables FILE makes
 #      render refuse; one in the ENVIRONMENT only warns; the value never
 #      reaches the guide or the report. Template-default audit covers
-#      MAILTO and the pool sizing.
+#      MAILTO, the pool sizing and PBS_DATASTORE_PATH.
 # Every stage fails closed. Exit 0 all passed, 1 any check failed.
-# Writes nothing into the tree.
+# Writes nothing into the tree. Python 3.8+ (stage 5d proves the grammar
+# floor of the track's Python files).
 set -euo pipefail
 TRACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
@@ -225,6 +229,44 @@ for py in scripts/render.py scripts/reflint.py docs/build-briefs.py; do
         echo "FAIL $py"; fail=1
     fi
 done
+
+echo "== python grammar floor (3.8) =="
+# Ruled M8 R10: the Cerberus tools declare Python 3.8+, and this stage
+# proves it for the grammar: every *.py file in the track (found, not
+# listed — a new tool is covered the day it lands) must parse with
+# ast.parse(..., feature_version=(3, 8)). Syntax only: a 3.9+ stdlib call
+# is not caught here. Honest caveat on the floor itself: on newer
+# interpreters, ast.parse(feature_version=(3, 8)) does NOT reject all
+# post-3.8 grammar — PEP 701 f-string quote reuse (3.12) and
+# parenthesized context managers (3.10) both still parse at the floor, so
+# a file using either would pass this stage. Self-test first: a 3.10
+# `match` statement must fail.
+if python3 - "$TRACK_DIR" <<'EOF'
+import ast, os, sys, warnings
+warnings.simplefilter("ignore")
+root = sys.argv[1]
+def too_new(src, fn):
+    try:
+        ast.parse(src, fn, feature_version=(3, 8))
+        return None
+    except SyntaxError as e:
+        return f"{e.msg} (line {e.lineno})"
+if not too_new("match x:\n    case 1:\n        pass\n", "self-test"):
+    print("PYFLOOR SELF-TEST FAILED: a match statement parsed at 3.8"); sys.exit(1)
+files = sorted(os.path.join(d, f) for d, dirs, fs in os.walk(root)
+               for f in fs if f.endswith(".py") and "__pycache__" not in d)
+bad = 0
+for fn in files:
+    why = too_new(open(fn, encoding="utf-8").read(), fn)
+    if why:
+        bad += 1
+        print(f"PYFLOOR-FAIL {os.path.relpath(fn, root)}: needs newer than Python 3.8 grammar: {why}")
+    else:
+        print(f"OK   {os.path.relpath(fn, root)} parses at 3.8")
+print(f"python grammar floor: {len(files)} file(s), {bad} too new (self-test OK)")
+sys.exit(1 if bad or not files else 0)
+EOF
+then :; else fail=1; fi
 
 # scan_blank_ifaces FILE... — fail on blank interface positions, the
 # signature of a renderer that substituted an empty value (H2).
@@ -422,13 +464,25 @@ if PBS_PASSWORD="$LIVE" "$TRACK_DIR/scripts/render.py" --vars "$TMP/live-env.sh"
 else
     echo "FAIL environment-held secret: warning missing, render failed, or the value leaked"; fail=1
 fi
-# (d) template-default audit covers MAILTO and the pool sizing.
+# (d) template-default audit covers MAILTO, the pool sizing and (M8 R4b)
+#     PBS_DATASTORE_PATH — in render.py and in the node-shell
+#     cerberus_audit_placeholders.
 if grep -q '^  MAILTO=ops@example.com$' "$TMP/render.log" \
    && grep -q '^  POOL_VM_QUOTA_BYTES=' "$TMP/render.log" \
-   && grep -q '^  POOL_VM_TARGET_SIZE=' "$TMP/render.log"; then
-    echo "OK   template-default audit reports MAILTO, POOL_VM_TARGET_SIZE, POOL_VM_QUOTA_BYTES"
+   && grep -q '^  POOL_VM_TARGET_SIZE=' "$TMP/render.log" \
+   && grep -q '^  PBS_DATASTORE_PATH=' "$TMP/render.log"; then
+    echo "OK   template-default audit reports MAILTO, POOL_VM_TARGET_SIZE, POOL_VM_QUOTA_BYTES, PBS_DATASTORE_PATH"
 else
-    echo "FAIL template-default audit does not report MAILTO / pool sizing"; fail=1
+    echo "FAIL template-default audit does not report MAILTO / pool sizing / PBS_DATASTORE_PATH"; fail=1
+fi
+# (output to a file first: under pipefail, grep -q closing the pipe early
+# would fail the producer; the audit's own non-zero exit is expected here)
+env -i CERBERUS_TEMPLATE="$TEMPLATE" bash --noprofile --norc -c \
+    'source "$1" >/dev/null 2>&1; cerberus_audit_placeholders' _ "$TEMPLATE" >"$TMP/node-audit.out" 2>&1 || true
+if grep -q '^PBS_DATASTORE_PATH  *' "$TMP/node-audit.out"; then
+    echo "OK   node-shell cerberus_audit_placeholders reports PBS_DATASTORE_PATH at its template default"
+else
+    echo "FAIL cerberus_audit_placeholders does not audit PBS_DATASTORE_PATH"; fail=1
 fi
 
 if [ "$fail" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "CHECKS FAILED"; exit 1; fi

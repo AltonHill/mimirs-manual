@@ -64,6 +64,16 @@ REQUIRED_VARS = [
     "CAT_CP", "CAT_WRK", "CAT_GPU",
     "KERNEL_VER", "NFS_SERVER", "NFS_SHARE", "NFS_MOUNT",
 ]
+# Site sign-off values (M8 R4a): required of every SITE file, but shipped
+# empty in the template on purpose — there is no safe default (01: "No
+# default on purpose: at fleet scale the statics run well past any guessed
+# range"). `vars` fails a site file that leaves one empty, exactly like a
+# REQUIRED_VARS name; on the pristine template (the publisher's check) it
+# prints a NOTE instead, because the template is not a site.
+SIGNOFF_VARS = {
+    "DHCP_POOL": "the site DHCP pool on the provisioning network, FIRST-LAST "
+                 "(01 sign-off, 01 \"DHCP\")",
+}
 
 
 def load_vars(path):
@@ -311,21 +321,26 @@ def resolve_vars(given, pass_name):
 # legitimately keep one (say NFS_MOUNT=/mnt/data) — confirm each.
 # Audited: identity, every network / gateway / DNS / admin-source range,
 # node and service IPs, the K8s ranges (00a: verify against the
-# customer's estate), storage, kernel, the BMC login name. Not audited:
-# role names, image /
-# category names, versions (shared conventions a site may keep), values
-# derived from another variable (FQDN_*, DNS_IP, RUNAI_ADMIN_USER), and
-# the credential class (excluded by policy, H6).
+# customer's estate), storage, kernel, the BMC login name — and (M8 R4b,
+# R5) the DHCP pool, the HA VIP and the two site pins (HELM_VERSION,
+# RUNAI_UTILS_COMMIT). Those four ship EMPTY, and an empty value is never
+# reported, so today their audit is coverage only: it starts reporting
+# the moment a template ships a default for one. Not audited: role names,
+# image / category names, the stack versions (shared conventions a site
+# may keep), values derived from another variable (FQDN_*, DNS_IP,
+# RUNAI_ADMIN_USER), and the credential class (excluded by policy, H6).
 AUDITED_VARS = (
     "DOMAIN", "CLUSTER_NAME", "CLIENT_ORG",
     "NET_PROVISION", "GW_PROVISION", "NET_STORAGE", "NET_USER", "GW_USER",
     "NET_OOB", "GW_OOB", "NET_DNS1", "NET_DNS2",
     "NET_ADMIN_SRC_A", "NET_ADMIN_SRC_B",
+    "DHCP_POOL", "BCM_HA_VIP",
     "K8S_SERVICE_NET", "K8S_POD_NET",
     "BCM_HEADNODE_IP", "K8S_CTRL_IPS", "GPU_WORKER_IPS",
     "IP_KGATEWAY", "IP_RUNAI", "IP_INFERENCE",
     "KERNEL_VER", "NFS_SERVER", "NFS_SHARE", "NFS_MOUNT",
     "BMC_USER",
+    "HELM_VERSION", "RUNAI_UTILS_COMMIT",
 )
 
 
@@ -463,12 +478,22 @@ def cidr_guard(vals, path, networks_path=None, explicit=False):
 def pass_vars(vars_, args):
     """Runbook 00: validate the variables file.
 
-    FAILS (exit 1) on: a missing required variable; an unfilled <...>
+    FAILS (exit 1) on: a missing required variable (in a site file, the
+    site sign-off values too: DHCP_POOL — M8 R4a); an unfilled <...>
     placeholder (credential class excluded by policy, H6); a Kubernetes
     CIDR guard failure (C1 — same guard as check.sh).
     REPORTS (never fails): audited values still identical to the shipped
     template's defaults — the template-default audit."""
     missing = [k for k in REQUIRED_VARS if not vars_.get(k)]
+    signoff = [k for k in SIGNOFF_VARS if not vars_.get(k)]
+    if is_template(args.vars):
+        for k in signoff:
+            print(f"NOTE: {k} is empty in the template by design — a site file "
+                  f"FAILS here until it is set: {SIGNOFF_VARS[k]}")
+    else:
+        missing += signoff
+        for k in signoff:
+            print(f"{k} is required for the site: {SIGNOFF_VARS[k]}")
     placeholders = {k: v for k, v in vars_.items() if "<" in v and ">" in v}
     excluded = sorted(k for k in placeholders if is_credential_class(k))
     placeholders = {k: v for k, v in placeholders.items() if k not in excluded}
@@ -509,7 +534,9 @@ def pass_vars(vars_, args):
 
     if missing or placeholders or cidr_errs:
         sys.exit(1)
-    print(f"OK: {len(vars_)} variables loaded, {len(REQUIRED_VARS)} required all set, "
+    print(f"OK: {len(vars_)} variables loaded, {len(REQUIRED_VARS)} required all set"
+          + ("" if is_template(args.vars) else f" (+ {len(SIGNOFF_VARS)} site sign-off)")
+          + ", "
           f"no unfilled placeholders, CIDR guard clean.")
 
 

@@ -84,12 +84,13 @@ source ~/.bashrc
 The two log-collector aliases run a **local copy** of the Run:ai
 professional-services utilities, checked out at a commit you have read
 — not whatever `main` serves at the moment of an incident (L10). Pin
-the commit once, record it in 10, and re-pin deliberately:
+the commit once — as `RUNAI_UTILS_COMMIT` in `site-vars.sh` (it ships
+empty) — record it in 10, and re-pin deliberately:
 
 ```bash
 git clone https://github.com/runai-professional-services/utilities.git /root/runai-utils
 git -C /root/runai-utils log --oneline -5      # read what you are about to trust
-RUNAI_UTILS_COMMIT="${RUNAI_UTILS_COMMIT:?set RUNAI_UTILS_COMMIT to the reviewed commit hash}"
+: "${RUNAI_UTILS_COMMIT:?set RUNAI_UTILS_COMMIT in site-vars.sh to the reviewed commit hash, then source it}"
 git -C /root/runai-utils checkout --detach "$RUNAI_UTILS_COMMIT"
 ```
 

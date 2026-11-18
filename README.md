@@ -16,6 +16,32 @@ commit `01fb620`. Vendor claims the library could not check are listed,
 with their status, in
 [`docs/verification-checklist.md`](docs/verification-checklist.md).
 
+## Just want one piece?
+
+You don't have to take the whole library. The components below are
+self-contained — each runs and tests on its own (Python floor per
+component: see [Requirements](#requirements)). Take only the piece you
+need with a sparse checkout:
+
+```
+git clone --filter=blob:none --sparse https://github.com/LokiX1/mimirs-manual.git
+cd mimirs-manual
+git sparse-checkout set dgx-vitals
+```
+
+Swap the last line for the piece you want:
+
+- `dgx-vitals` — **DGX Vitals**, the DGX health and validation tool.
+  The one to take for installs without the full BasePod stack.
+- `veil` — **Mimir's Veil**, the anonymizer: scrub a document or bundle
+  before it leaves the site.
+- `proxmox-ceph` — **Cerberus**, the Proxmox VE + Ceph hyperconverged
+  runbook.
+
+Update later with a plain `git pull` inside the checkout. (On the CDW
+side, clone the AltonHill mirror of this repo instead — the same
+commands apply.)
+
 ## The tracks
 
 | Track | Stack | Directory | For |
@@ -68,7 +94,7 @@ Record the real numbers in BCM section 10 and replace these over time.
 |---|---|---|
 | A1 | **Read.** This page, then `bcm/README.md`, `bcm/00-overview.md`, `proxmox-ceph/README.md` and `proxmox-ceph/runbook/00-overview/README.md`. Skim the [glossary](#glossary). | 1–2 h |
 | A2 | **Get the library and run both gates** (commands below). Green on a clean copy is the baseline. | 15–30 min |
-| A3 | **Design intake.** BCM `00a`–`00d` (customer inputs, sizing, decisions, assumptions). Verify the Kubernetes ranges against the customer's **existing** networks, not just this plan. Cerberus 00-overview, and **if the site is flat**, `proxmox-ceph/docs/site-profile-flat.md` now — it changes Ceph and corosync addressing. Compare the two tracks' IP plans with each other: no gate reads both (checklist X-1). | 1–3 days (customer-dependent) |
+| A3 | **Design intake.** BCM `00a`–`00d` (customer inputs, sizing, decisions, assumptions). Verify the Kubernetes ranges against the customer's **existing** networks, not just this plan. Cerberus 00-overview, and **if the site is flat**, `proxmox-ceph/docs/site-profile-flat.md` now — it changes Ceph and corosync addressing. Plan the two tracks' networks together: once both site files exist (A4), the BCM gate's cross-track stage fails on any overlap between them (checklist X-1). | 1–3 days (customer-dependent) |
 | A4 | **Companyify both site files and validate** (commands below). | 2–4 h |
 | A5 | **Greenfield only: BCM 14** — jumpbox, DNS, time sync, before 01's IP plan goes live. | 0.5–1 day |
 
@@ -85,8 +111,8 @@ cp bcm/00-variables.sh bcm/site-vars.sh
 nvim bcm/site-vars.sh
 cp proxmox-ceph/runbook/00-overview/variables.sh proxmox-ceph/site-vars.sh
 nvim proxmox-ceph/site-vars.sh
-bcm/scripts/runbook.py vars            # reads bcm/site-vars.sh: fails on placeholders + K8s CIDR overlap; reports shipped defaults
-bcm/scripts/check.sh --site            # the CIDR guard now reads site-vars.sh
+bcm/scripts/runbook.py vars            # reads bcm/site-vars.sh: fails on placeholders, an empty DHCP_POOL + K8s CIDR overlap; reports shipped defaults
+bcm/scripts/check.sh --site            # the CIDR guard now reads site-vars.sh; with both site files present, the cross-track IP guard compares them
 proxmox-ceph/scripts/render.py --out site-docs/proxmox-ceph/   # reads proxmox-ceph/site-vars.sh; its report lists every template default still in place
 # (re-run either render later with --force: it replaces only a directory it wrote)
 ```
@@ -213,8 +239,10 @@ Both tracks were built to the same contract, so they line up:
     (`backup-drill.sh`, the runbook's destructive drills) asks for a
     literal `yes` first.
 - **Validate everything** — `bcm/scripts/check.sh` (bash/YAML/Python/
-  placeholder lint/disksetup by-path guard/dangling-reference lint/CIDR
-  guard/variable sanity/leak scan/pass smoke tests) is **green**. Two
+  placeholder lint/disksetup by-path guard/dangling-reference lint/the
+  same lints over this front door and `docs/`/CIDR guard/cross-track IP
+  guard (templates always; a site's two site files when both are
+  present)/variable sanity/leak scan/pass smoke tests) is **green**. Two
   modes: the default *publisher* mode runs every stage and exits 2 (never
   green) without the out-of-repo leak deny-list; `--site` runs every
   stage except the leak scan, so a teammate on site gets a meaningful
@@ -223,8 +251,9 @@ Both tracks were built to the same contract, so they line up:
   paste-atomicity lint (every state block is one fail-closed
   `( set -euo pipefail … )` unit that finds the site file through
   `CERBERUS_TRACK`), the design-brief format check (fails without
-  `pdftotext`), the render smoke tests (site-file default, links,
-  blank-interface scan) and the credential tripwire.
+  `pdftotext`), the Python 3.8 grammar floor, the render smoke tests
+  (site-file default, links, blank-interface scan) and the credential
+  tripwire.
 - **Docs are deliverables** — each track renders its site-specific
   Markdown guide (`bcm/scripts/runbook.py render`,
   `proxmox-ceph/scripts/render.py`) into a fresh directory whose links
@@ -296,11 +325,12 @@ mimirs-manual/
     00-overview.md … 16-infiniband.md, 99-role-mapping.md
     00-variables.sh    # the pristine template — copy to site-vars.sh
     scripts/           # runbook.py (8 passes + layoutgate), generate-nodes.py,
-                       # generate-users.py, check.sh, reflint.py, CSV templates
+                       # generate-users.py, check.sh, reflint.py, crosstrack.py
+                       # (the cross-track IP guard), CSV templates
   proxmox-ceph/        # Proxmox VE + Ceph track (Cerberus)
     README.md          # track guide (incl. the working-directory contract)
     runbook/           # 00-overview … 07-validation (+ 00a), one dir per section;
-                       # 00-overview/variables.sh is the pristine template
+                       # runbook/00-overview/variables.sh is the pristine template
     scripts/           # preflight.sh, net-verify.sh, backup-drill.sh (node scripts),
                        # render.py, check.sh, reflint.py
     docs/              # design briefs (+ build-briefs.py), site profile,
@@ -327,10 +357,12 @@ does not round them to one number.
   for its YAML stage, and fails without it.
 - **Proxmox track:** Proxmox VE 9.2.x nodes; the node scripts run on the
   nodes themselves (see each script's header). `render.py`, `check.sh`
-  and `reflint.py` are stdlib Python 3 (`reflint.py` states 3.8+; the
-  gate is run on 3.14 here). `check.sh` also needs `pdftotext`
-  (poppler-utils). Rebuilding the design brief (`docs/build-briefs.py`)
-  needs `rsvg-convert`, LibreOffice (`soffice`) and `qpdf`.
+  and `reflint.py` are stdlib Python **3.8+** — each header states it,
+  and `check.sh` proves the grammar floor on every Cerberus Python file
+  (`ast.parse` at feature version 3.8; it is run on 3.14 here).
+  `check.sh` also needs `pdftotext` (poppler-utils). Rebuilding the
+  design brief (`proxmox-ceph/docs/build-briefs.py`) needs
+  `rsvg-convert`, LibreOffice (`soffice`) and `qpdf`.
 - **DGX Vitals:** Python **3.10+** — the floor its own repo states, in
   its README, QUICKSTART, Operators Guide and both tools' headers. Stdlib
   only; runs on the node itself or from a jump host over SSH

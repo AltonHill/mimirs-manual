@@ -58,8 +58,11 @@ template) becomes plain text naming the library path.
 The render report lists: values still literally PLACEHOLDER; defined-but-
 empty names (passed through, never blanked); the credential-class names kept
 as references; and every audited value (networks, gateways, IPs, PBS host,
-DNS, NTP, the mail target, the pool sizing, the XCC login name) still
-identical to the shipped template default in runbook/00-overview/variables.sh.
+DNS, NTP, the mail target, the pool sizing, the XCC login name, the PBS
+datastore path) still identical to the shipped template default in
+runbook/00-overview/variables.sh.
+
+Python 3.8+, stdlib only (scripts/check.sh proves the grammar floor).
 """
 
 import argparse
@@ -265,9 +268,12 @@ def substitute(text, values, passed=None):
 # DNS, NTP — plus (M5) the mail target, the pool sizing pair and the XCC
 # login name, whose shipped values are just as plausible-looking:
 # ops@example.com, 3T / 3.3 TB (correct only for the reference drives),
-# USERID (Lenovo's factory login).
+# USERID (Lenovo's factory login). M8 R4b: the PBS datastore path, whose
+# shipped /mnt/backup-cerberus is a lab path (its guard in
+# cerberus_require_vars is unchanged — this is audit coverage only).
 AUDITED_RE = re.compile(r"(_NET|_GW|_IP|_IPS)$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS"
-                        r"|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER)$")
+                        r"|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER"
+                        r"|PBS_DATASTORE_PATH)$")
 
 
 def audit_against_template(values, template_values):
