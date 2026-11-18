@@ -166,25 +166,25 @@ or /25 site gets the right mask; nothing is hard-coded to /24.
   200 and `PBS_VLAN` (tagged), and the PBS host's ports carry `PBS_VLAN`
   untagged — configured in 00a §7a; verify with `nv show interface`.
 
-### 3b. Netris OOB VLAN (data side)
+### 3b. Fabric-controller VMs (only if the site runs one)
 
-The Netris controller nodes run as **VMs on the Proxmox hosts**. They reach
-the data-side OOB network over a dedicated VLAN on the 1GbE path:
+Some sites run their network fabric's controller (an SDN / fabric-automation
+product) as **VMs on these Proxmox hosts**. If yours does, the pattern is:
 
-- Proxmox vSwitch (Linux bridge) on the dedicated 1Gb vLinks carries the
-  OOB VLAN; each Netris VM gets a **dedicated vNIC** on that VLAN.
-- This is the **data-side** OOB path — it is **separate from XCC true OOB**
-  (BMC), which stays on its own physical path. The architecture diagram
-  shows them as two different lines for a reason: two failure domains.
-- **VLAN ID and subnet TBD** — record them here when assigned; the Netris
-  VM vNICs and any IP plan for this VLAN follow the site's addressing.
+- The controller VMs reach the fabric's out-of-band network over a
+  **dedicated VLAN on the 1GbE path**, carried by a Linux bridge, with a
+  **dedicated vNIC** per controller VM on that VLAN.
+- That is a **data-side** OOB path — keep it **separate from XCC/BMC
+  OOB**, which stays on its own physical path: two failure domains.
+- Record the VLAN ID and subnet in the site copy when assigned; they follow
+  the site's addressing, not this template.
 - **Bootstrap order matters:** physical mgmt links → Proxmox cluster →
-  Netris VMs → Netris-managed fabric. Netris automates the fabric, but the
-  Netris VMs themselves depend on Proxmox being up — never assume the
-  fabric is automated before the VMs that automate it exist.
-- **Two switches stay permanently outside Netris management** (record
-  which two in the site copy). They are the cold-start escape hatch: a
-  path to the fabric that never depends on Netris being alive.
+  controller VMs → controller-managed fabric. Never assume the fabric is
+  automated before the VMs that automate it exist.
+- **Keep at least two switches permanently outside the controller's
+  management** (record which in the site copy) — the cold-start escape
+  hatch: a path to the fabric that never depends on the controller being
+  alive.
 
 ---
 

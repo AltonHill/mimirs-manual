@@ -24,8 +24,9 @@ confirm against the vendor download pages at build time):
 - **NVIDIA MFT** (Mellanox Firmware Tools: `mst`, `mlxconfig`, `mlxfwreset`)
   for Debian 13 — its kernel-module build against the PVE 9.2 kernel is
   **[unverified]**. Debian's own `mstflint` (`mstconfig`, `mstfwreset`) is the
-  in-distro fallback; whether it carries the BlueField-3 `INTERNAL_CPU_*`
-  parameters is **[unverified]**.
+  in-distro fallback; whether it carries the BlueField-3
+  `INTERNAL_CPU_OFFLOAD_ENGINE` parameter (the only one §5 sets) is
+  **[unverified]**.
 
 Several steps are **MANUAL-ONLY** (firmware flashes, physical cabling) — they
 cannot be scripted and must be done by a person at the rack or in the XCC web
@@ -288,17 +289,15 @@ the path `mst status` printed (the block refuses a path that does not exist);
   mlxconfig -d "$DEV" q INTERNAL_CPU_OFFLOAD_ENGINE
   # 2) Both ports to Ethernet (1=InfiniBand, 2=Ethernet)
   mlxconfig -d "$DEV" set LINK_TYPE_P1=2 LINK_TYPE_P2=2
-  # 3) NIC mode (Arm cores off) — the five-parameter recipe is [unverified]
-  #    for BlueField-3 (review register #13: BF3 docs centre on
-  #    INTERNAL_CPU_OFFLOAD_ENGINE); confirm against NVIDIA's BF3 "modes of
-  #    operation" page before running
-  mlxconfig -d "$DEV" s \
-    INTERNAL_CPU_MODEL=1 \
-    INTERNAL_CPU_PAGE_SUPPLIER=1 \
-    INTERNAL_CPU_ESWITCH_MANAGER=1 \
-    INTERNAL_CPU_IB_VPORT0=1 \
-    INTERNAL_CPU_OFFLOAD_ENGINE=1
-  # 4) Firmware reset; then a full AC power cycle via XCC / rack PDU
+  # 3) NIC mode (Arm cores off). For BlueField-3 this is ONE parameter —
+  #    NVIDIA "BlueField Modes of Operation" (DOCA 2.9 archive), "Changing
+  #    Mode > Using External Host Command Line": "For BlueField-3: mlxconfig
+  #    -d /dev/mst/<device> s INTERNAL_CPU_OFFLOAD_ENGINE=1". The PAGE_SUPPLIER
+  #    / ESWITCH_MANAGER / IB_VPORT0 set is the BlueField-2 recipe — not used.
+  mlxconfig -d "$DEV" s INTERNAL_CPU_OFFLOAD_ENGINE=1
+  # 4) "For the configuration to take effect, Arm and NIC components must
+  #    undergo a reset. Power cycle is recommended." (same document) — do the
+  #    full AC power cycle via XCC / rack PDU; mlxfwreset alone is not enough.
   mlxfwreset -d "$DEV" r
 )
 ```
@@ -439,8 +438,9 @@ is on from the hostname and refuses anything else:
 
 NVUE supports `?`, `-h` and tab completion (`nv sh int` works).
 
-> The 3rd (spare) SN5610 is out of scope: leave it unconfigured/powered per site
-> policy and document its state.
+> Only the two fabric SN5610s are configured here. Any other switch at the
+> site (another SN5610, the GPU side's InfiniBand) is out of scope for this
+> runbook — leave it to its own owner and document its state.
 
 ### 7b. SN2201 (1GbE management)
 

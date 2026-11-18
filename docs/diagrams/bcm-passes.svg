@@ -4,7 +4,7 @@
 <text x="24" y="34" font-size="20" font-weight="700" fill="#1e293b">BCM track — the pass framework</text>
 <text x="24" y="56" font-size="12" fill="#64748b">runbook.py: one reviewable, re-runnable pass per job. --dry-run prints, --exec asks first.</text>
 <rect x="24" y="96" width="180" height="44" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
-<text x="114.0" y="120.0" font-size="12" font-weight="700" fill="#1e293b" text-anchor="middle">00-variables.sh</text>
+<text x="114.0" y="120.0" font-size="12" font-weight="700" fill="#1e293b" text-anchor="middle">site-vars.sh</text>
 <rect x="24" y="156" width="180" height="44" rx="8" fill="#fef3c7" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6,4"/>
 <text x="114.0" y="180.0" font-size="12" font-weight="700" fill="#1e293b" text-anchor="middle">networks.csv *</text>
 <rect x="24" y="276" width="180" height="44" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
@@ -42,9 +42,9 @@
 <line x1="204" y1="298" x2="296" y2="298" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
 <line x1="204" y1="358" x2="296" y2="358" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
 <line x1="204" y1="478" x2="296" y2="478" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
-<text x="24" y="600" font-size="11" fill="#64748b">* optional — without it, the stock 4-network plan from 00-variables.sh is used</text>
+<text x="24" y="600" font-size="11" fill="#64748b">* optional — without it, the stock 4-network plan from site-vars.sh is used</text>
 <rect x="300" y="530" width="340" height="52" rx="8" fill="#7c3aed" stroke="#7c3aed" stroke-width="1.5"/>
-<text x="470.0" y="549.5" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">render  →  site-docs/</text>
+<text x="470.0" y="549.5" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">render  →  site-docs/bcm</text>
 <text x="470.0" y="566.5" font-size="11" fill="#e9e4ff" text-anchor="middle">the deliverable</text>
 <polyline points="390,500 390,530" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr)"/>
 </svg>

@@ -9,12 +9,13 @@
 ## Quickstart
 
 ```bash
-# 1. Companyify: fill in the one file that changes per site
-nvim 00-variables.sh && source 00-variables.sh
+# 1. Companyify: copy the pristine template to the site file, fill THAT in
+cp 00-variables.sh site-vars.sh   # site-vars.sh is gitignored; never edit 00-variables.sh
+nvim site-vars.sh && source site-vars.sh
 
-# 2. Validate before anything else
+# 2. Validate before anything else (every pass reads site-vars.sh; --vars FILE names another)
 scripts/runbook.py vars          # fails: unfilled placeholders, K8s CIDR overlap · reports: shipped defaults still in place
-scripts/check.sh --site          # on site: every stage except the leak scan (exit 0 pass / 1 fail)
+scripts/check.sh --site          # on site: every stage except the leak scan (exit 0 pass / 1 fail); CIDR guard reads site-vars.sh
 # scripts/check.sh               # publisher: every stage incl. the leak scan (needs the out-of-repo deny-list; exit 2 without it)
 
 # 3. Run the deployment as composable passes (dry-run first, always)
@@ -25,15 +26,25 @@ scripts/runbook.py nodes --inventory inventory.csv --dry-run
 
 ## The companyify flow
 
-1. **Copy** this directory for the site.
-2. **Fill in `00-variables.sh`** — it's the only file that changes per
+1. **Copy the template to the site file:** `cp 00-variables.sh
+   site-vars.sh`. `00-variables.sh` is the pristine, tracked template —
+   never edit it in place (a clone has a push remote; the site's values
+   must not ride it). `site-vars.sh` sits beside it and is gitignored.
+2. **Fill in `site-vars.sh`** — it's the only file that changes per
    deployment. Domain, networks, node names, IPs, credentials (as
    placeholder names), versions.
-3. `source 00-variables.sh` on the machine you're working from.
-4. **Work sections 01 → 15 in order**, or run the matching
-   `runbook.py` pass. Each section lists prerequisites at the top and
-   ends with verification checkboxes. (13 is optional HA and runs before
-   05; 14 is greenfield infra and runs before 01.)
+3. `source site-vars.sh` on the machine you're working from.
+   Every `runbook.py` pass and `generate-nodes.py` read it by default
+   (`--vars FILE` names another, before or after the pass name). With no
+   site file they stop (exit 2); handed the template itself they refuse
+   it (exit 2) — except `vars` and `render` named explicitly with
+   `--vars 00-variables.sh`, the publisher's check, which say so.
+4. **Work sections 01 → 16 in the run order** in `00-overview.md` (the
+   library front door's cold-start path has it with time estimates), or
+   run the matching `runbook.py` pass. Each section lists prerequisites
+   at the top and ends with verification checkboxes. The run order in
+   short: 14 (greenfield) first; 13 (HA) before 05; 16 (IB) and 15
+   (users) any time after 03; 12 is the reference for 03.4.
 5. Every `bash` block is copy-pasteable once the variables are sourced.
    Executable blocks carry no `<…>` placeholders (`check.sh` lints both
    upper- and lower-case ones). `UPPER_CASE` names come from
@@ -55,7 +66,7 @@ asks for confirmation first. Passes run on the BCM head node as root.
 ![BCM track — the pass framework](../docs/diagrams/bcm-passes.svg)
 
 ```
-00-variables.sh ──┬──▶ runbook.py vars         validate the variables file
+site-vars.sh ─────┬──▶ runbook.py vars         validate the variables file
                   ├──▶ runbook.py networks    01 · create/align BCM networks
                   ├──▶ runbook.py images      03 · categories + software images
 disk-layouts/ ────▶├──▶ runbook.py disklayouts 03.4 · by-path XML → node, then category
@@ -66,7 +77,7 @@ accounts.csv ─────▶└──▶ runbook.py users       15 · BCM use
 
 | Pass | Runbook | Input | Does |
 |---|---|---|---|
-| `vars` | 00 | `00-variables.sh` (+ `networks.csv` beside it, or `--networks`) | **Fails** on a missing required variable, an unfilled `<…>` placeholder, or a Kubernetes CIDR guard failure (the same guard as `check.sh`). **Reports, never fails:** every audited value still identical to the shipped template's default (`DOMAIN`, `CLIENT_ORG`, `NFS_SERVER`, `KERNEL_VER`, `BMC_USER`, every network/gateway/DNS/admin range, node and service IPs, the K8s ranges) — confirm each is really the site's. Credential-class names (`*PASSWORD*`, `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PRODUCT_KEY*`, `*LICENSE_KEY*`) are excluded by policy from both: they stay placeholders and are reported as an excluded count. On the pristine template it exits 0 with the audit listing all 27 audited values |
+| `vars` | 00 | `site-vars.sh` (+ `networks.csv` beside it, or `--networks`) | **Fails** on a missing required variable, an unfilled `<…>` placeholder, or a Kubernetes CIDR guard failure (the same guard as `check.sh`). **Reports, never fails:** every audited value still identical to the shipped template's default (`DOMAIN`, `CLIENT_ORG`, `NFS_SERVER`, `KERNEL_VER`, `BMC_USER`, every network/gateway/DNS/admin range, node and service IPs, the K8s ranges) — confirm each is really the site's. Credential-class names (`*PASSWORD*`, `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PRODUCT_KEY*`, `*LICENSE_KEY*`) are excluded by policy from both: they stay placeholders and are reported as an excluded count. On the pristine template it exits 0 with the audit listing all 27 audited values |
 | `networks` | 01 / 02.5 | variables or `networks.csv` | Creates/aligns BCM networks — **data-driven**: add rows to `networks.csv` (GPU east-west, IB, IPMI) with no code changes; `--networks` selects the file, otherwise the stock 4-network plan from variables. Dry-run in 01; `--exec` in 02.5 (refuses without `cmsh`) |
 | `images` | 03 | variables | Creates categories, clones images (picks `dgx-image` vs `default-image` from `GPU_NODE_TYPE`), assigns images to categories |
 | `disklayouts` | 03.4 (ref. 12) | `disk-layouts/<type>-by-path.xml` | Validates the XML (by-path only — refuses kernel names and by-id/uuid), applies it to the collection node (`--node`) or the category; stops with the collection procedure if the XML isn't built yet (it needs live hardware). `--type`/`--category` cover every host type. Logged override for a host type where by-path fails in the installer: `--allow-non-by-path --reason "…"` (loud warning every time, one line appended to `disk-layouts/OVERRIDES.log`; 03.4) |
@@ -74,7 +85,7 @@ accounts.csv ─────▶└──▶ runbook.py users       15 · BCM use
 | `nodes` | 03.5 | inventory CSV | Validates (refuses an unfilled skeleton), then — under `--exec`, before anything is asked or run — applies the 03.4 fleet gate to every category in the inventory and to every existing node's device-level layout, and refuses unless each is by-path; then provisions every node. The generated `provision-nodes.sh` repeats the gate before its first `add`. Honors the same override |
 | `storage` | 07 | variables | Installs/upgrades the NFS CSI driver, generates + applies StorageClasses on the variables-derived exports (`--plan 7a`: one default class, local-path un-defaulted, exactly-one-default verified; `--plan 7b`: data/scratch/models) |
 | `users` | 15 | accounts CSV + passwords file | Creates BCM users (minimal `cmsh` form — extra switches cause OpenLDAP weirdness); refuses placeholder passwords; passwords reach `cmsh` on stdin, never argv; `--sudoers` emits the sudoers drop-in |
-| `render` | — | variables | Builds the site-specific MD guide: copies every doc and substitutes the variables, **except credential-class names, which stay `$BMC_PASSWORD`-style references**. Warns loudly (names only) if a credential holds a real value. Skips `99-role-mapping.md`, warns on unfilled placeholders |
+| `render` | — | variables | Builds the site-specific MD guide: copies every doc and substitutes the variables, **except credential-class names, which stay `$BMC_PASSWORD`-style references**. A credential holding a real value **in the variables file** (even as a `${NAME:-value}` default) makes render **refuse — exit 3, nothing written**; one held only in the environment is warned about by name and the render continues. Skips `99-role-mapping.md`, warns on unfilled placeholders |
 
 ### The three workflows
 
@@ -91,14 +102,20 @@ built.** It's a final deliverable — the first and last thing the
 customer sees.
 
 ```bash
-scripts/runbook.py render --out site-docs/
-# 23 docs -> site-docs/, every non-credential variable filled in, placeholders flagged;
-# credentials stay as $BMC_PASSWORD-style references (warns loudly if one holds a real value)
+scripts/runbook.py render --out site-docs/bcm/     # reads site-vars.sh
+# 23 docs -> site-docs/bcm/, every non-credential variable filled in, placeholders flagged;
+# credentials stay as $BMC_PASSWORD-style references (a real value in the file: exit 3, nothing written)
 ```
 
 The template docs are never modified; render writes a fresh directory
-every time. The template stays pristine — the site's truth lives in
-`00-variables.sh` + the three CSVs.
+every time: an existing `--out` is refused, and `--force` replaces only a
+directory a previous render wrote (it carries a `.bcm-render` marker) —
+never an arbitrary one. Links resolve inside the rendered guide: the
+README's diagrams are copied into its `diagrams/`, links between
+sections stay links, and links to library files that are not part of
+the deliverable (the variables template, `99-role-mapping.md`) become
+plain text naming the library path. The template stays pristine — the
+site's truth lives in `site-vars.sh` + the three CSVs.
 
 ### Writing a new pass
 
@@ -116,15 +133,20 @@ flags), `backup` (11).
 
 ## End result
 
-![End result — 128-node BCM + Run:ai GPU cluster](../docs/diagrams/cluster-128.svg)
+![Reference design — 128-node BCM + Run:ai GPU cluster](../docs/diagrams/cluster-128.svg)
 
-What a completed build looks like: the head node as a single VM on
-Proxmox (the standard), NFS served from the head node over
-`internalnet`, 128 B300 workers in four blocks of 32, three fabrics,
-Kubernetes + Run:ai on the workers — every value from
-`00-variables.sh`, every step from the rendered guide. 256-node layouts
-are a future exercise (IP planning at that scale needs its own design
-pass).
+What a completed build looks like at 128-node scale — a **reference
+design**, not the template's defaults: the head node as a single VM on
+Proxmox (the standard); NFS from the **external Pure NFS server on
+`storagenet`** (`$NFS_SERVER`, mounted per 07 — the head node does not
+serve it); provisioning on `internalnet`; `mgmtnet` for OOB/BMC;
+128 B300 workers in four blocks of 32; Kubernetes + Run:ai on the
+workers. The values are parameterized in `00-variables.sh` (copied to
+`site-vars.sh`), whose shipped defaults describe the **lab build**
+(3 GPU workers) — size `GPU_WORKERS`/`GPU_WORKER_IPS` and the networks
+to the site. Link speeds and the InfiniBand fabric are not variables:
+they come from the site's BOM (16 covers IB). 256-node layouts are a
+future exercise (IP planning at that scale needs its own design pass).
 
 ### Head-node topologies
 
@@ -146,7 +168,7 @@ edge cases.
 | — | [`00b-recommended-specs.md`](00b-recommended-specs.md) | Design-time sizing — settled before 01 |
 | — | [`00c-design-decisions.md`](00c-design-decisions.md) | The choices 01's sign-off ratifies |
 | — | [`00d-design-assumptions.md`](00d-design-assumptions.md) | Register of what design takes on faith |
-| — | [`00-variables.sh`](00-variables.sh) | **The companyify target** — all site values |
+| — | [`00-variables.sh`](00-variables.sh) | **The pristine template** — copy to `site-vars.sh` (the companyify target) |
 | 01 | [Environment & IP plan](01-environment-ip-plan.md) | Networks, DNS, inventory — get sign-off first |
 | 02 | [BCM head node install](02-bcm-headnode-install.md) | ISO, licensing, upgrades, base config |
 | 03 | [Images, categories, nodes](03-images-categories-nodes.md) | Software images, categories, provisioning, IPMI |
@@ -225,9 +247,12 @@ history is not scanned.
 ## Requirements
 
 - **Python 3.12** — stock on Ubuntu 24.04, which is what DGX OS and the
-  BCM head node are based on. No pip packages needed; everything here
-  is standard library only (`csv`, `argparse`, `ipaddress`, `re`,
-  `subprocess`). Verify: `python3 --version`
+  BCM head node are based on. No pip packages needed for the passes and
+  generators: they are standard library only (`csv`, `argparse`,
+  `ipaddress`, `re`, `subprocess`). Verify: `python3 --version`
+- **`scripts/check.sh` only:** PyYAML for its YAML stage (`python3-yaml`
+  on Ubuntu/Debian). Without it that stage fails with a message naming
+  the package — the gate does not pass what it could not check.
 - `cmsh` passes run **on the BCM head node** as root.
 - `bash`, standard coreutils.
 

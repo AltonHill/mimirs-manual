@@ -41,16 +41,20 @@ less provision-nodes.sh   # review every command before running
 #    bash provision-nodes.sh
 ```
 
-`--check` refuses an unfilled skeleton (its placeholder MACs
-`00:50:56:b3:xx:xx` are recognized). The skeleton follows the variables
+`--check` refuses an unfilled skeleton (its placeholder MACs — the RFC
+7042 documentation range `00:00:5e:00:53:xx`, and the older
+`00:50:56:b3:xx:xx` pattern — are recognized). The skeleton follows the variables
 and 01: hostnames in the `$GPU_WORKERS` form, control plane from `.50`,
 GPU workers from `.53`, BMC addresses bounds-checked against `$NET_OOB`.
 
 ## 3.1 — Create categories
 
-One category per node type. DGX A/H/B families are interchangeable in
-this pattern — one category covers all DGX nodes of the same image. Add
-a category per HGX OEM type or UCS as needed.
+One category per **host type**. DGX A/H/B models share one *image*
+(3.2), but not one category: the category carries the type's by-path
+disk layout (3.4), and each chassis model has its own. A single-type
+cluster uses `$CAT_GPU`; a second DGX model adds `runai-<type>-cat`
+(e.g. `runai-dgx-h200-cat`) on the same image. Add a category per HGX
+OEM type or UCS the same way.
 
 ```bash
 cmsh -c "category; add $CAT_CP ; commit"    # Run:ai control plane
@@ -61,9 +65,9 @@ cmsh -c "category; add $CAT_GPU ; commit"   # GPU workers (e.g. runai-dgx-cat)
 # cmsh -c "category; add runai-ucs-cat ; commit"
 ```
 
-> **Field note:** the lab used four categories (`runai-cp-cat`,
-> `runai-wrk-cat`, plus one per GPU type) — one per GPU type is the
-> pattern to keep. DGX vs HGX-8GPU (Dell/HPE/Lenovo) vs Cisco UCS GPU
+> **Pattern:** one category for the control plane (`runai-cp-cat`), one
+> for CPU workers (`runai-wrk-cat`), plus one per GPU node type — one per
+> GPU type is the pattern to keep. DGX vs HGX-8GPU (Dell/HPE/Lenovo) vs Cisco UCS GPU
 > nodes differ only in category, image, and interface names — the steps
 > are identical.
 
@@ -101,22 +105,28 @@ exit
 # repeat for $IMG_WRK and $IMG_GPU
 ```
 
-On GPU images only, enable the NVIDIA stack:
+The NVIDIA stack on the GPU image (driver, `cm-nvidia-container-toolkit`,
+the containerd runtime config, the fabricmanager/persistenced/dcgm
+services) is installed and enabled in **04.1** — one container toolkit,
+BCM's packaged one. Do not also `apt install nvidia-container-toolkit`
+here: two toolkit packages in one image is a possible file conflict
+(unverified either way; the track installs only one).
+
+Pin the kernel in **every** image, add the Mellanox module on GPU images
+(before any node boots from them — 3.4's collection nodes are the
+first). Same rule as 04.3: **pin only a kernel you have confirmed exists
+in that image** — a pin to a missing kernel leaves nodes unable to boot
+the image:
 
 ```bash
-cm-chroot-sw-img /cm/images/$IMG_GPU
-systemctl enable nvidia-fabricmanager nvidia-persistenced nvidia-dcgm
-apt install -y nvidia-container-toolkit
-nvidia-ctk runtime configure --runtime=containerd
-exit
-```
-
-Pin the kernel per image, add the Mellanox module on GPU images (before
-any node boots from them — 3.4's collection nodes are the first):
-
-```bash
-cmsh -c "softwareimage ; use $IMG_CP ; set kernelversion $KERNEL_VER ; commit"
-cmsh -c "softwareimage ; use $IMG_GPU ; set kernelversion $KERNEL_VER ; commit"
+for img in "$IMG_CP" "$IMG_WRK" "$IMG_GPU"; do
+  if ls /cm/images/"$img"/boot/vmlinuz-"$KERNEL_VER" >/dev/null 2>&1; then
+    cmsh -c "softwareimage ; use $img ; set kernelversion $KERNEL_VER ; commit"
+  else
+    echo "STOP: kernel $KERNEL_VER not in image $img — installed kernels:"
+    ls /cm/images/"$img"/boot/ | grep vmlinuz-
+  fi
+done
 cmsh -c "softwareimage; use $IMG_GPU; kernelmodules; add mlx5_core; commit"
 ```
 
@@ -263,7 +273,8 @@ that node:**
 ```bash
 scripts/runbook.py disklayouts --type "$LAYOUT_TYPE" --category "$LAYOUT_CAT" --node "$LAYOUT_NODE" --dry-run
 scripts/runbook.py disklayouts --type "$LAYOUT_TYPE" --category "$LAYOUT_CAT" --node "$LAYOUT_NODE" --exec
-# full install so the new layout is written (property name: BCM 11 manual)
+# full install so the new layout is written. [unverified] the property name
+# (nextinstallmode) and `reboot -n` form — first-contact check (verification checklist)
 cmsh -c "device ; use $LAYOUT_NODE ; set nextinstallmode full ; commit"
 cmsh -c "device ; reboot -n $LAYOUT_NODE"
 ```
@@ -361,7 +372,15 @@ cmsh -c "device ; use $LAYOUT_NODE ; clear disksetup ; commit"
 > provision. At scale, run 3.0's `provision-nodes.sh` (or
 > `runbook.py nodes --exec`) now: both refuse unless every category in
 > the inventory carries a by-path layout. They are add-or-verify: the
-> collection nodes already exist, and they note and align them. The
+> collection nodes already exist, and they note and align them.
+>
+> **Gate prerequisite — verify before the first wave [unverified]:** the
+> gate reads each category's layout with `cmsh -c "category ; use CAT ;
+> get disksetup"` and parses what it prints. That output format has not
+> been seen on a real BCM 11 head node. On the first head node, run it
+> once against the collection node's category and confirm it prints the
+> XML itself (with `<blockdev>` lines) — not a path, not a summary —
+> before trusting a pass/fail from the gate (verification checklist). The
 > hand-typed commands below have no such check — run
 > `scripts/runbook.py layoutgate --category "$CAT_GPU"` (and each other
 > category) first.
@@ -392,7 +411,10 @@ cmsh -c "device ; use k8s-ctrl-1 ; set mac ${NODE_MAC:?set NODE_MAC to this node
 ```
 
 DGX nodes with dual provisioning NICs — add the second interface and
-drop the boot flag from the first:
+drop the boot flag from the first. **[unverified]** that `interfaces ;
+remove bootif` is how BCM 11 drops the boot flag (it removes the
+`bootif` interface object); confirm with `interfaces ; list` on the
+first such node before the fleet (verification checklist):
 
 ```bash
 # NODE_IFACE2 / NODE_MAC2: the second provisioning NIC's name and MAC
@@ -402,6 +424,23 @@ cmsh -c "device ; use gpu-worker-1 ; interfaces ; remove bootif ; commit"
 ```
 
 The disk layout comes from the category (3.4) — set nothing per node.
+
+**Power the fleet on and PXE-boot it.** Defining devices does not boot
+them. BCM's own power control needs the BMC interfaces from 3.6, so the
+first boot of a node that 3.6 hasn't covered is by hand: from its BMC
+web UI or console, set a one-time network (PXE) boot and power it on —
+in waves, not all at once, so the head node's DHCP/TFTP isn't swamped.
+Once 3.6 is done, BCM drives power itself (same form as 13.2):
+
+```bash
+cmsh -c "device ; power -c $CAT_GPU on"     # per category, after 3.6
+cmsh -c "device ; list"                      # watch each node reach UP; re-run until it does
+```
+
+Nodes install on first boot (full install, the category's by-path
+layout) and come up `UP` in `device list`. A node stuck in
+`installing` or reprovisioning in a loop is a 3.4 problem: stop the
+wave and recheck that type's layout before booting more.
 
 ## 3.6 — IPMI / BMC networking **[restored]**
 
@@ -425,12 +464,19 @@ cmsh -c "device ; use gpu-worker-1 ; interfaces ; add bmc ipmi0 ${BMC_IP:?set BM
 
 # BMC credentials. The value comes from your shell, never from a file:
 #   read -rs BMC_PASSWORD; export BMC_PASSWORD
-# bcm_require_secret (00-variables.sh) refuses an unset value or a
+# bcm_require_secret (defined in the variables file) refuses an unset value or a
 # <PLACEHOLDER>, so the placeholder can never become the fleet's BMC password.
-# NOTE: BCM 11 docs show `set password` prompting interactively
-# (enter/retype). If the one-liner below prompts instead of accepting
-# the value, run the bmcsettings block in an interactive cmsh session.
-bcm_require_secret BMC_PASSWORD && cmsh -c "partition ; use base ; bmcsettings ; set username $BMC_USER ; set password $BMC_PASSWORD ; commit"
+# The password never travels in argv (no `cmsh -c "... set password ..."`,
+# which `ps` and shell history would show): the commands reach cmsh on
+# STDIN from the printf builtin — the same pattern as 15's generated
+# create-users.sh. [unverified] piping commands into cmsh on stdin is
+# assumed to behave like an interactive session, and BCM 11 docs show
+# `set password` prompting (enter/retype). If the block below prompts,
+# or `bmcsettings --show` afterwards shows no change, set it by hand in
+# an interactive session instead: cmsh, then partition ; use base ;
+# bmcsettings ; set username ; set password ; commit.
+bcm_require_secret BMC_PASSWORD && printf 'partition\nuse base\nbmcsettings\nset username %s\nset password %s\ncommit\n' \
+  "$BMC_USER" "$BMC_PASSWORD" | cmsh -q
 # inspect effective settings without entering the submode:
 # cmsh -c "partition ; use base ; bmcsettings --show"
 ```

@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """runbook.py — subroutine passes for the B300 deployment runbook.
 
-Each pass performs one runbook job, driven by 00-variables.sh (and CSV
+Each pass performs one runbook job, driven by the site variables file (and CSV
 inventories). Passes are small, reviewable, and re-runnable — the end
 goal is one pass per runbook section, all driven by data files.
 
+Site file (H5 / Fable B3 — the Cerberus pattern): the tracked template
+00-variables.sh is never edited. Copy it to bcm/site-vars.sh (gitignored),
+fill that in, and every pass reads it:
+    cp 00-variables.sh site-vars.sh
+--vars FILE names another site file, before or after the pass name. With
+no --vars, bcm/site-vars.sh is used; if it does not exist the pass exits 2.
+The pristine template is refused (exit 2) by every pass except `vars` and
+`render`, which accept it only when named explicitly (--vars
+00-variables.sh) and say so — that is the publisher's validation path,
+never a site's.
+
 Usage:
-    scripts/runbook.py vars [--vars 00-variables.sh] [--networks networks.csv]
+    scripts/runbook.py vars [--vars site-vars.sh] [--networks networks.csv]
     scripts/runbook.py networks [--networks networks.csv] [--dry-run|--exec]
-    scripts/runbook.py images [--vars 00-variables.sh] [--dry-run|--exec]
+    scripts/runbook.py images [--vars site-vars.sh] [--dry-run|--exec]
     scripts/runbook.py disklayouts [--type T --category C] [--node N] [--dry-run|--exec]
     scripts/runbook.py layoutgate --category C [--category C2 ...] [--device D ...]
     scripts/runbook.py nodes --inventory inventory.csv [--dry-run|--exec]
@@ -16,7 +27,7 @@ Usage:
        --allow-non-by-path --reason "<why by-path fails on this host type>")
     scripts/runbook.py storage --plan 7a|7b [--dry-run|--exec]
     scripts/runbook.py users --accounts accounts.csv --passwords FILE [--dry-run|--exec]
-    scripts/runbook.py render --out site-docs/
+    scripts/runbook.py render --out site-docs/bcm/
 
 --dry-run (default) prints exactly what would run. --exec asks for
 confirmation, then runs it. cmsh passes must run on the BCM head node
@@ -209,8 +220,9 @@ def run_commands(cmds, dry_run, what):
 #   - `vars` does not fail on them (they stay placeholders in the template);
 #   - `render` never substitutes them: the rendered guide keeps `$NAME`
 #     for the operator's shell to expand at run time;
-#   - `render` warns loudly (names only, never values) if one holds a
-#     real value while a deliverable is being built.
+#   - `render` REFUSES (exit 3) if one holds a real value in the
+#     variables file, and warns loudly if one is live only in the
+#     environment — names only, never values.
 CREDENTIAL_PATTERNS = ("PASSWORD", "API_KEY", "TOKEN", "SECRET",
                        "PRODUCT_KEY", "LICENSE_KEY")
 CREDENTIAL_CLASS_RE = re.compile("|".join(CREDENTIAL_PATTERNS), re.I)
@@ -221,15 +233,75 @@ def is_credential_class(name):
     return bool(CREDENTIAL_CLASS_RE.search(name))
 
 
+SHELL_DEFAULT_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=](.*)\}$")
+
+
 def is_placeholder_value(value):
     """True if a value is NOT a live secret: empty, a <PLACEHOLDER>
     (anywhere in the value, e.g. ${X:-<X>}), or pure shell indirection
-    ($VAR, ${VAR}, $(cmd)) resolved by the operator's shell at run time."""
+    ($VAR, ${VAR}, $(cmd)) resolved by the operator's shell at run time.
+    A shell default form ${X:-value} is judged by its DEFAULT: the
+    template's ${X:-<X>} is a placeholder, but ${X:-hunter2} carries a
+    live value in the file and is not."""
     v = (value or "").strip()
+    m = SHELL_DEFAULT_RE.match(v)
+    if m:
+        return is_placeholder_value(m.group(1))
     return (not v) or bool(re.search(r"<[^<>]+>", v)) or v.startswith("$")
 
 
-TEMPLATE_VARS = os.path.join(os.path.dirname(HERE), "00-variables.sh")
+TRACK_DIR = os.path.dirname(HERE)
+TEMPLATE_VARS = os.path.join(TRACK_DIR, "00-variables.sh")
+SITE_VARS = os.path.join(TRACK_DIR, "site-vars.sh")
+# Passes that may read the pristine template — only when it is named
+# explicitly, and with a NOTE. Everything else refuses it (fail closed).
+TEMPLATE_OK_PASSES = ("vars", "render")
+
+
+def is_template(path):
+    return (os.path.exists(path) and os.path.exists(TEMPLATE_VARS)
+            and os.path.samefile(path, TEMPLATE_VARS))
+
+
+def resolve_vars(given, pass_name):
+    """The site variables file for this run, or exit 2 (fail closed).
+
+    --vars FILE (absolute, cwd-relative, or relative to bcm/) wins; with
+    no --vars, bcm/site-vars.sh. Never falls back to the template: its
+    shipped defaults describe the lab build, and a pass run against them
+    acts on the wrong site."""
+    copy_hint = f"cp {TEMPLATE_VARS} {SITE_VARS}   # then fill in the site's values"
+    if given is None:
+        if not os.path.isfile(SITE_VARS):
+            print("REFUSED: no site variables file. Create the default, or pass --vars FILE:",
+                  file=sys.stderr)
+            print(f"         {copy_hint}", file=sys.stderr)
+            print("         Refusing to run against the template defaults "
+                  "(00-variables.sh is the pristine template; never edit it).",
+                  file=sys.stderr)
+            sys.exit(2)
+        path = SITE_VARS
+    else:
+        path = given
+        if not os.path.exists(path):
+            alt = os.path.join(TRACK_DIR, given)
+            if os.path.exists(alt):
+                path = alt
+        if not os.path.isfile(path):
+            print(f"REFUSED: --vars file not found: {given}", file=sys.stderr)
+            sys.exit(2)
+    if is_template(path):
+        if pass_name in TEMPLATE_OK_PASSES and given is not None:
+            print(f"# NOTE: reading the pristine TEMPLATE ({path}) — the publisher's "
+                  f"check, not a site run; every value is a lab default.", file=sys.stderr)
+        else:
+            print(f"REFUSED: {path} is the pristine template, not a site file.",
+                  file=sys.stderr)
+            print(f"         {copy_hint}", file=sys.stderr)
+            print("         and pass that (or leave --vars off: site-vars.sh is the default).",
+                  file=sys.stderr)
+            sys.exit(2)
+    return path
 
 # Template-default audit (Cluster A / review M2 — the M3 method built for
 # Cerberus). The template's defaults are plausible-looking values, not
@@ -273,13 +345,23 @@ def _committed_template():
 
 def template_defaults(vars_path):
     """(defaults dict, note) for the template-default audit, or (None, why)."""
-    same_file = (os.path.exists(vars_path) and os.path.exists(TEMPLATE_VARS)
-                 and os.path.samefile(vars_path, TEMPLATE_VARS))
+    same_file = is_template(vars_path)
+    committed = _committed_template()
     if not same_file:
+        # A site file is compared against what SHIPPED: the committed
+        # template when git can show it (so an edit-in-place of the
+        # tracked template cannot hide a default), else the file on disk.
+        if committed is not None:
+            note = "compared against the committed template (git HEAD)"
+            if os.path.isfile(TEMPLATE_VARS):
+                with open(TEMPLATE_VARS) as f:
+                    if parse_vars_text(f.read()) != parse_vars_text(committed):
+                        note += (" — NOTE: the tracked 00-variables.sh has been edited "
+                                 "in place; site values belong in site-vars.sh only")
+            return parse_vars_text(committed), note
         if not os.path.isfile(TEMPLATE_VARS):
             return None, f"shipped template not found at {TEMPLATE_VARS}"
         return load_vars(TEMPLATE_VARS), f"compared against {TEMPLATE_VARS}"
-    committed = _committed_template()
     with open(TEMPLATE_VARS) as f:
         on_disk = f.read()
     if committed is None:
@@ -436,7 +518,7 @@ NET_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def _default_network_rows(vars_):
-    """The stock 4-network plan, built from 00-variables.sh."""
+    """The stock 4-network plan, built from the site variables file."""
     return [
         {"name": "internalnet", "cidr": vars_["NET_PROVISION"],
          "gateway": vars_["GW_PROVISION"], "mgmt_allowed": "no",
@@ -467,11 +549,18 @@ def _load_network_rows(path):
             print(f"ERROR: {path}: expected header exactly: "
                   f"{','.join(NET_CSV_COLUMNS)}", file=sys.stderr)
             sys.exit(1)
+        extra = []
         for i, r in enumerate(reader, start=2):
             if not (r.get("name") or "").strip():
                 continue
+            if r.get(None):
+                # L4: an unquoted comma in a field (usually notes) makes
+                # extra columns; csv would silently drop them.
+                extra.append(f"networks.csv:{r['name'].strip()}: "
+                             f"{len(NET_CSV_COLUMNS) + len(r[None])} fields, expected "
+                             f"{len(NET_CSV_COLUMNS)} — quote a field that contains a comma")
             rows.append({k: (r.get(k) or "").strip() for k in NET_CSV_COLUMNS})
-    errors, seen = [], set()
+    errors, seen = list(extra), set()
     for r in rows:
         tag = f"networks.csv:{r['name'] or '?'}"
         if not NET_NAME_RE.match(r["name"]):
@@ -505,32 +594,65 @@ def pass_networks(vars_, args):
 
     Data-driven: --networks networks.csv (copy scripts/networks-template.csv).
     Without --networks, falls back to the stock 4-network plan from
-    00-variables.sh. Adding a fabric (GPU east-west, IB, IPMI) is a new
+    the site variables file. Adding a fabric (GPU east-west, IB, IPMI) is a new
     CSV row — no code changes.
     """
     if args.networks:
         rows = _load_network_rows(args.networks)
         print(f"# networks pass: {len(rows)} networks from {args.networks}",
               file=sys.stderr)
+        # L4: the four stock networks live in the site file too (NET_*,
+        # GW_*). The CSV must agree with it, or the two sources drift and
+        # the pass builds a plan the rest of the runbook does not use.
+        stock = {r["name"]: r for r in _default_network_rows(vars_)}
+        drift = []
+        for r in rows:
+            s = stock.get(r["name"])
+            if not s:
+                continue
+            for key in ("cidr", "gateway"):
+                if r[key] != s[key]:
+                    drift.append(f"{r['name']} {key}: CSV {r[key] or '(none)'} vs "
+                                 f"site file {s[key] or '(none)'}")
+        if drift:
+            print("REFUSED: networks.csv disagrees with the site variables file "
+                  "on a stock network — fix one so both say the same:", file=sys.stderr)
+            for d in drift:
+                print(f"  - {d}", file=sys.stderr)
+            sys.exit(1)
     else:
         rows = _default_network_rows(vars_)
-        print("# networks pass: stock 4-network plan from 00-variables.sh "
+        print("# networks pass: stock 4-network plan from the variables file "
               "(--networks networks.csv for extras)", file=sys.stderr)
+    import ipaddress
     cmds = []
     for r in rows:
-        name, cidr = r["name"], r["cidr"]
+        name = r["name"]
+        # A BCM network object has no "network" property: the address is
+        # baseaddress + netmaskbits (BCM 11 Administrator Manual, 3.2.3.3:
+        # "set baseaddress 192.168.1.0", "set netmaskbits 24") — verified
+        # 2026-11-17, register item 7 (the pass used to `set network CIDR`).
+        net = ipaddress.ip_network(r["cidr"], strict=False)
+        addr = (f'set baseaddress {net.network_address} ; '
+                f'set netmaskbits {net.prefixlen}')
         if r["action"] == "align":
             # created by the BCM installer; align it to the plan
-            c = f'cmsh -c "network; use {name} ; set network {cidr}'
+            c = f'cmsh -c "network; use {name} ; {addr}'
             if r["gateway"]:
                 c += f' ; set gateway {r["gateway"]}'
             cmds.append(c + ' ; commit"')
         else:
-            # add-or-verify: create only if absent; the sets below converge it
-            cmds.append(Step(f'cmsh -c "network; add {name} {cidr} ; commit"',
+            # add-or-verify: create only if absent; the sets below converge it.
+            # The manual: "a new network can be added from within network
+            # mode using the add or clone commands" — add takes the name.
+            # [unverified] the exact `add NAME` form, the `managementallowed`
+            # property name, and the `network; list` first-column format the
+            # existence check reads — first-contact items (verification
+            # checklist, docs/verification-checklist.md).
+            cmds.append(Step(f'cmsh -c "network; add {name} ; commit"',
                              exists=('cmsh -c "network; list"', name),
                              tolerate_exists=True, what=f"network {name}"))
-            cmds.append(f'cmsh -c "network; use {name} ; set network {cidr} ; commit"')
+            cmds.append(f'cmsh -c "network; use {name} ; {addr} ; commit"')
             if r["gateway"]:
                 cmds.append(f'cmsh -c "network; use {name} ; set gateway {r["gateway"]} ; commit"')
             if r["mgmt_allowed"] == "yes":
@@ -961,6 +1083,41 @@ def credential_tripwire(vars_, environ):
     return live
 
 
+RENDER_MARKER = ".bcm-render"
+_IMAGE_EXT = (".svg", ".png", ".jpg", ".jpeg", ".gif")
+_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _rewrite_links(text, src_path, dst_path, out_root, rendered, copies):
+    """L2: make a rendered doc's relative links work inside the deliverable
+    (same rule as Cerberus render.py): a link to another rendered doc is
+    kept; a linked diagram is copied into <out>/diagrams/; a link to a
+    library file that is not part of the deliverable (the variables
+    template, 99-role-mapping.md) becomes plain text naming the library
+    path. URLs, anchors and absolute paths are untouched."""
+    repo = os.path.dirname(TRACK_DIR)
+    src_dir, dst_dir = os.path.dirname(src_path), os.path.dirname(dst_path)
+
+    def repl(m):
+        bang, label, target = m.groups()
+        if re.match(r"^[a-z][a-z0-9+.-]*:|^#|^/", target):
+            return m.group(0)
+        path, _, frag = target.partition("#")
+        src = os.path.normpath(os.path.join(src_dir, path))
+        if src in rendered:
+            new = os.path.relpath(rendered[src], dst_dir)
+            return f"{bang}[{label}]({new}{'#' + frag if frag else ''})"
+        if os.path.isfile(src) and src.lower().endswith(_IMAGE_EXT):
+            dst = os.path.join(out_root, "diagrams", os.path.basename(src))
+            copies[src] = dst
+            return f"{bang}[{label}]({os.path.relpath(dst, dst_dir)})"
+        if os.path.exists(src):
+            lib = os.path.relpath(src, repo)
+            return f"{label} (library file `{lib}`)" if label else f"library file `{lib}`"
+        return m.group(0)
+    return _LINK_RE.sub(repl, text)
+
+
 def pass_render(vars_, args):
     """Build the site-specific MD guide: copy every doc, substitute the
     $VARS from the variables file — except credentials.
@@ -970,9 +1127,14 @@ def pass_render(vars_, args):
     (case-insensitive) is never substituted. The rendered guide keeps the
     $NAME reference; the operator's shell supplies the value at run time.
     Credentials never appear in a deliverable, placeholder or real.
-    TRIPWIRE: if one of them holds a real (non-placeholder) value in the
-    variables file or the environment, render warns loudly — names only,
-    never the value — because live secrets are loaded near a deliverable.
+    TRIPWIRE (M4 slate #4, parity with Cerberus render.py since M5):
+      - a credential-class name holding a LIVE value in the variables
+        FILE (including a live default inside ${NAME:-...}) -> render
+        REFUSES, exit 3, before anything is written: a deliverable is
+        being built from a file that holds a secret;
+      - a live value held only in the ENVIRONMENT (the sanctioned
+        `read -rs NAME; export NAME`) -> loud warning, render continues.
+    Names only, never values, in every message.
 
     Three workflows, one guarantee — the rendered guide always exists:
       client walkthrough:  render -> hand the MDs over, copy/paste together
@@ -982,24 +1144,64 @@ def pass_render(vars_, args):
     Never modifies the template docs; writes into --out.
     99-role-mapping.md is merge documentation, not deployment docs — skipped.
     """
-    docs_dir = os.path.dirname(os.path.abspath(args.vars))
+    # The docs are the track's own (bcm/), wherever the site file lives.
+    docs_dir = TRACK_DIR
     out = args.out
-    os.makedirs(out, exist_ok=True)
+    live = credential_tripwire(vars_, os.environ)
+    file_live = [n for n, where in live if "variables file" in where]
+    env_live = [n for n, where in live if "variables file" not in where]
+    bar = "!" * 72
+    if file_live:
+        print(bar, file=sys.stderr)
+        print("!! REFUSED: LIVE SECRETS IN THE VARIABLES FILE", file=sys.stderr)
+        for name in file_live:
+            print(f"!!   {name}: holds a real value in {args.vars}", file=sys.stderr)
+        print("!! A deliverable is built from this file. Put the placeholder back", file=sys.stderr)
+        print("!! and supply the value at run time only (read -rs NAME; export", file=sys.stderr)
+        print("!! NAME). Nothing was written.", file=sys.stderr)
+        print(bar, file=sys.stderr)
+        sys.exit(3)
+    # L2: a fresh directory every time. An existing --out is refused;
+    # --force replaces it only when a previous render wrote it (marker),
+    # never an arbitrary directory.
+    if os.path.exists(out):
+        if not args.force:
+            print(f"REFUSED: {out} exists — render writes a fresh directory "
+                  f"(--force replaces a previous render's output)", file=sys.stderr)
+            sys.exit(2)
+        if not os.path.isfile(os.path.join(out, RENDER_MARKER)):
+            print(f"REFUSED: {out} was not written by runbook.py render (no "
+                  f"{RENDER_MARKER} marker) — choose a fresh --out", file=sys.stderr)
+            sys.exit(2)
+        shutil.rmtree(out)
+    os.makedirs(out)
+    with open(os.path.join(out, RENDER_MARKER), "w") as f:
+        f.write("written by bcm/scripts/runbook.py render; --force may replace this directory\n")
     vals = _expand_vars(vars_)
     skip = {"99-role-mapping.md"}
+    docs = [fn for fn in sorted(os.listdir(docs_dir))
+            if fn.endswith(".md") and fn not in skip]
+    targets = {os.path.join(docs_dir, fn): os.path.join(os.path.abspath(out), fn)
+               for fn in docs}
+    copies = {}
     n = 0
-    for fn in sorted(os.listdir(docs_dir)):
-        if not fn.endswith(".md") or fn in skip:
-            continue
-        with open(os.path.join(docs_dir, fn)) as f:
+    for fn in docs:
+        src = os.path.join(docs_dir, fn)
+        with open(src) as f:
             text = f.read()
-        with open(os.path.join(out, fn), "w") as f:
-            f.write(_sub_vars(text, vals))
+        text = _rewrite_links(_sub_vars(text, vals), src, targets[src],
+                              os.path.abspath(out), targets, copies)
+        with open(targets[src], "w") as f:
+            f.write(text)
         n += 1
+    for src, dst in sorted(copies.items()):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
     creds = sorted(k for k in vars_ if is_credential_class(k))
     unfilled = sorted(k for k, v in vals.items()
                       if "<" in v and ">" in v and k not in creds)
-    print(f"# render: {n} docs -> {out}/ (skipped: {', '.join(sorted(skip))})",
+    print(f"# render: {n} docs -> {out}/ (skipped: {', '.join(sorted(skip))})"
+          + (f"; {len(copies)} diagram(s) copied into diagrams/" if copies else ""),
           file=sys.stderr)
     print(f"# render: credential-class names kept as $NAME, never substituted "
           f"({CREDENTIAL_CLASS_TEXT}): {', '.join(creds) or 'none'}",
@@ -1010,21 +1212,15 @@ def pass_render(vars_, args):
         print("# run `runbook.py vars` for the full list", file=sys.stderr)
     else:
         print("# render: all non-credential variables filled", file=sys.stderr)
-    live = credential_tripwire(vars_, os.environ)
-    if live:
-        bar = "!" * 72
+    if env_live:
         print(bar, file=sys.stderr)
-        print("!! LIVE SECRETS LOADED NEAR A DELIVERABLE", file=sys.stderr)
-        for name, where in live:
-            print(f"!!   {name}: holds a real value ({' + '.join(where)})",
-                  file=sys.stderr)
+        print("!! WARNING: LIVE SECRETS LOADED NEAR A DELIVERABLE (environment)",
+              file=sys.stderr)
+        for name in env_live:
+            print(f"!!   {name}: holds a real value (environment)", file=sys.stderr)
         print("!! The rendered guide was NOT given these values — it keeps the",
               file=sys.stderr)
-        print("!! $NAME references. But a real credential sitting in the variables",
-              file=sys.stderr)
-        print("!! file (or this shell) next to a deliverable is how it ends up in",
-              file=sys.stderr)
-        print("!! one: put the placeholder back and supply it at run time only.",
+        print("!! $NAME references. Unset them in this shell when you are done.",
               file=sys.stderr)
         print(bar, file=sys.stderr)
 
@@ -1196,16 +1392,24 @@ def pass_users(vars_, args):
 
 def main():
     ap = argparse.ArgumentParser(description="B300 runbook subroutine passes.")
-    ap.add_argument("--vars", default="00-variables.sh",
-                    help="variables file (default: 00-variables.sh)")
+    vars_help = ("site variables file (default: bcm/site-vars.sh, a copy of the "
+                 "00-variables.sh template; the template itself is refused)")
+    ap.add_argument("--vars", default=None, help=vars_help)
     ap.add_argument("--dry-run", dest="dry_run", action="store_true", default=True,
                     help="print what would run (default)")
     ap.add_argument("--exec", dest="dry_run", action="store_false",
                     help="actually execute (asks for confirmation)")
-    # also accept --dry-run/--exec after the subcommand name
+    # also accept --vars/--dry-run/--exec after the subcommand name.
+    # All three use SUPPRESS in the shared parent so the subparser never
+    # overwrites a flag given BEFORE the pass name with its own default
+    # (L1: `runbook.py --exec networks` used to come back dry_run=True).
+    # Given on both sides, the one after the pass name wins.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--dry-run", dest="dry_run", action="store_true", default=True)
-    common.add_argument("--exec", dest="dry_run", action="store_false")
+    common.add_argument("--vars", default=argparse.SUPPRESS, help=vars_help)
+    common.add_argument("--dry-run", dest="dry_run", action="store_true",
+                        default=argparse.SUPPRESS)
+    common.add_argument("--exec", dest="dry_run", action="store_false",
+                        default=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="pass_", required=True)
 
     # D3: the logged, named by-path override (disklayouts, nodes, layoutgate)
@@ -1226,7 +1430,7 @@ def main():
     p = sub.add_parser("networks", parents=[common],
                        help="runbook 01: create/align the BCM networks")
     p.add_argument("--networks", default=None,
-                   help="networks CSV (default: stock plan from 00-variables.sh)")
+                   help="networks CSV (default: stock plan from the variables file)")
     sub.add_parser("images", parents=[common],
                    help="runbook 03: categories + software images")
     p = sub.add_parser("nodes", parents=[common, override],
@@ -1262,18 +1466,15 @@ def main():
     p = sub.add_parser("render", parents=[common],
                        help="build the site-specific MD guide (variable substitution; "
                             "credentials are never substituted)")
-    p.add_argument("--out", default="site-docs",
-                   help="output directory (default: site-docs)")
+    p.add_argument("--out", default="site-docs/bcm",
+                   help="output directory (default: site-docs/bcm — one directory "
+                        "per track, so the Cerberus render never collides with it)")
+    p.add_argument("--force", action="store_true",
+                   help="replace an existing --out that a previous render wrote "
+                        "(never an arbitrary directory)")
 
     args = ap.parse_args()
-    if not os.path.exists(args.vars):
-        # allow running from the scripts/ dir
-        alt = os.path.join(os.path.dirname(HERE), os.path.basename(args.vars))
-        alt2 = os.path.join(HERE, "..", "00-variables.sh")
-        for cand in (alt, alt2):
-            if os.path.exists(cand):
-                args.vars = cand
-                break
+    args.vars = resolve_vars(args.vars, args.pass_)
     vars_ = load_vars(args.vars)
     {"vars": pass_vars, "networks": pass_networks, "images": pass_images,
      "nodes": pass_nodes, "layoutgate": pass_layoutgate,

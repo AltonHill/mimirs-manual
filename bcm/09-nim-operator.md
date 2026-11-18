@@ -1,7 +1,13 @@
 # 09 — NIM Operator
 
-> **Prerequisites:** 06 complete (Run:ai healthy), 07 complete (NFS CSI
-> default StorageClass available for model cache PVCs).
+> **Prerequisites:** 06 complete (Run:ai healthy), and a **default
+> StorageClass** the model-cache PVC can use. On **7A** that is
+> `nfs-csi` (07 makes it the only default). **7B sets no default** —
+> neither 07 nor `runbook.py storage --plan 7b` changes which class is
+> the default — so a 7B site either sets one deliberately (and records
+> it in 10) or edits `storageClass:` in 9.2 to a 7B class (`nfs-models`
+> is the natural one). Check before 9.2: `kubectl get storageclass`
+> shows the class 9.2 names.
 
 ## 9.1 — Secrets
 
@@ -9,12 +15,16 @@
 kubectl create namespace nim-service
 # NGC_API_KEY comes from the shell (06.1 exports it from ngc-api.key);
 # bcm_require_secret refuses an unset value or a <PLACEHOLDER> value
-bcm_require_secret NGC_API_KEY && kubectl create secret -n nim-service docker-registry ngc-secret \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="$NGC_API_KEY"
-bcm_require_secret NGC_API_KEY && kubectl create secret -n nim-service generic ngc-api-secret \
-  --from-literal=NGC_API_KEY="$NGC_API_KEY"
+# Both secrets are created on STDIN (printf builtin): the key never
+# appears in argv (`ps`, shell history) — same form as 08.5. [unverified]
+# --from-file=...=/dev/stdin reads the piped value; if not, use an
+# interactive session and a mode-0600 file deleted afterwards.
+bcm_require_secret NGC_API_KEY && printf '{"auths":{"nvcr.io":{"username":"$oauthtoken","password":"%s","auth":"%s"}}}' \
+    "$NGC_API_KEY" "$(printf '%s' "\$oauthtoken:$NGC_API_KEY" | base64 -w0)" \
+  | kubectl create secret generic ngc-secret -n nim-service \
+      --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson=/dev/stdin
+bcm_require_secret NGC_API_KEY && printf '%s' "$NGC_API_KEY" \
+  | kubectl create secret generic ngc-api-secret -n nim-service --from-file=NGC_API_KEY=/dev/stdin
 # Optional: HuggingFace
 # kubectl create secret -n nim-service generic hf-api-secret \
 #   --from-literal=HF_TOKEN="<HF-TOKEN>"
@@ -40,7 +50,7 @@ spec:
   storage:
     pvc:
       create: true
-      storageClass: nfs-csi
+      storageClass: nfs-csi        # 7A default; a 7B site: its deliberate default, or nfs-models
       size: "50Gi"
       volumeAccessMode: ReadWriteMany
   resources: {}

@@ -3,7 +3,7 @@
 > Everything the site has to hand over before design can close.
 > Request this list at design kickoff: the build stalls exactly
 > where an input is missing, and two of these rows gate 01's
-> sign-off outright. Values land in `00-variables.sh` and the CSVs —
+> sign-off outright. Values land in the site file `site-vars.sh` (a copy of the `00-variables.sh` template) and the CSVs —
 > credentials always as placeholder names, never real secrets in
 > any document.
 

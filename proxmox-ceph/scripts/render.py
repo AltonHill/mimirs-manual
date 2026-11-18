@@ -36,10 +36,25 @@ The live case today is the PBS token secret (PBS_PASSWORD, 06.5): it
 belongs in the site's secrets vault, never in site-vars.sh.
 
 Usage:
-    scripts/render.py --out site-docs/
-    scripts/render.py --vars /path/to/variables.sh --out site-docs/ [--force]
+    scripts/render.py --out site-docs/proxmox-ceph/          # reads <track>/site-vars.sh
+    scripts/render.py --vars /path/to/site-vars.sh --out site-docs/proxmox-ceph/ [--force]
+    scripts/render.py --vars runbook/00-overview/variables.sh --out DIR   # publisher's check
 
-The template docs are never modified; render always writes a fresh directory.
+Site file (ruled 2026-11-17, M7 #7 — aligned with BCM's runbook.py): with
+no --vars, render reads <track>/site-vars.sh and REFUSES (exit 2, with the
+cp line to run) when it does not exist. It never falls back to the
+template. The pristine template is accepted only when named explicitly
+with --vars, and then prints a NOTE: that is the publisher's check, not a
+site render.
+
+The template docs are never modified; render always writes a fresh
+directory. An existing --out is refused; --force replaces it only if a
+previous render wrote it (the .cerberus-render marker) — never an
+arbitrary directory. Relative links are rewritten so the deliverable
+stands alone (L2): a linked diagram is copied into <out>/diagrams/; a link
+to a rendered section keeps working; a link to a library file that is not
+part of the deliverable (docs/references.md, a script, the variables
+template) becomes plain text naming the library path.
 The render report lists: values still literally PLACEHOLDER; defined-but-
 empty names (passed through, never blanked); the credential-class names kept
 as references; and every audited value (networks, gateways, IPs, PBS host,
@@ -55,8 +70,66 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TRACK_DIR = os.path.dirname(SCRIPT_DIR)
-DEFAULT_VARS = os.path.join(TRACK_DIR, "runbook", "00-overview", "variables.sh")
+DEFAULT_VARS = os.path.join(TRACK_DIR, "runbook", "00-overview", "variables.sh")  # the TEMPLATE
+SITE_VARS = os.path.join(TRACK_DIR, "site-vars.sh")
 RUNBOOK_DIR = os.path.join(TRACK_DIR, "runbook")
+REPO_DIR = os.path.dirname(TRACK_DIR)
+MARKER = ".cerberus-render"
+IMAGE_EXT = (".svg", ".png", ".jpg", ".jpeg", ".gif")
+LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def resolve_vars(given):
+    """The site variables file, or exit 2 (fail closed). Mirrors BCM's
+    runbook.py resolve_vars: --vars FILE (cwd- or track-relative) wins;
+    with no --vars, <track>/site-vars.sh; never the template by default."""
+    hint = (f"cp {os.path.relpath(DEFAULT_VARS)} {os.path.relpath(SITE_VARS)}"
+            "   # then fill in the site's values")
+    if given is None:
+        if not os.path.isfile(SITE_VARS):
+            print("REFUSED: no site variables file. Create the default, or pass --vars FILE:",
+                  file=sys.stderr)
+            print(f"         {hint}", file=sys.stderr)
+            print("         Refusing to render the template defaults unknowingly "
+                  "(runbook/00-overview/variables.sh is the pristine template).",
+                  file=sys.stderr)
+            sys.exit(2)
+        return SITE_VARS
+    path = given
+    if not os.path.exists(path) and os.path.exists(os.path.join(TRACK_DIR, given)):
+        path = os.path.join(TRACK_DIR, given)
+    if not os.path.isfile(path):
+        print(f"REFUSED: --vars file not found: {given}", file=sys.stderr)
+        sys.exit(2)
+    return path
+
+
+def rewrite_links(text, src_path, dst_path, out_root, rendered, copies):
+    """L2: make a rendered doc's relative links work inside the deliverable.
+
+    src_path / dst_path: the doc's source and output paths. rendered: the
+    set of source paths the render writes (abs) -> output path. copies:
+    dict filled with source image -> output path to copy afterwards."""
+    src_dir, dst_dir = os.path.dirname(src_path), os.path.dirname(dst_path)
+
+    def repl(m):
+        bang, label, target = m.groups()
+        if re.match(r"^[a-z][a-z0-9+.-]*:|^#|^/", target):
+            return m.group(0)                      # URL, anchor, absolute: untouched
+        path, _, frag = target.partition("#")
+        src = os.path.normpath(os.path.join(src_dir, path))
+        if src in rendered:
+            new = os.path.relpath(rendered[src], dst_dir)
+            return f"{bang}[{label}]({new}{'#' + frag if frag else ''})"
+        if os.path.isfile(src) and src.lower().endswith(IMAGE_EXT):
+            out = os.path.join(out_root, "diagrams", os.path.basename(src))
+            copies[src] = out
+            return f"{bang}[{label}]({os.path.relpath(out, dst_dir)})"
+        if os.path.exists(src):
+            lib = os.path.relpath(src, REPO_DIR)
+            return f"{label} (library file `{lib}`)" if label else f"library file `{lib}`"
+        return m.group(0)                          # unresolvable: reflint's job, not ours
+    return LINK_RE.sub(repl, text)
 
 
 # H6 / I5: the credential class, shared with the BCM track's runbook.py
@@ -94,9 +167,23 @@ def parse_variables(path):
     pat_default = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"\$\{\1:-(.*)\}"\s*(?:#.*)?$')
     # plain "value" / 'value' / bare forms
     pat_plain = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|(\S+))\s*(?:#.*)?$")
+    # L16: only top-level assignments are site variables. Lines inside a
+    # function body (the cerberus_* helpers' `val=...`, `missing=1`) and
+    # indented lines are skipped.
+    func_start = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{\s*$")
+    in_func = False
     with open(path) as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            if in_func:
+                if raw.rstrip() == "}":
+                    in_func = False
+                continue
+            if func_start.match(raw.rstrip()):
+                in_func = True
+                continue
+            if raw[:1].isspace():
+                continue
+            line = raw.strip()
             m = pat_default.match(line)
             if m:
                 values[m.group(1)] = m.group(2)
@@ -203,13 +290,15 @@ def credential_tripwire(values, doc_refs, environ):
 
 def main():
     ap = argparse.ArgumentParser(description="Render the site-specific Cerberus guide.")
-    ap.add_argument("--vars", default=DEFAULT_VARS, help="variables.sh to read")
+    ap.add_argument("--vars", default=None,
+                    help="site variables file (default: <track>/site-vars.sh, a copy of "
+                         "runbook/00-overview/variables.sh; the template only when named)")
     ap.add_argument("--out", required=True, help="fresh output directory")
-    ap.add_argument("--force", action="store_true", help="overwrite existing output dir")
+    ap.add_argument("--force", action="store_true",
+                    help="replace an existing output dir that a previous render wrote")
     args = ap.parse_args()
 
-    if not os.path.isfile(args.vars):
-        sys.exit(f"variables file not found: {args.vars}")
+    args.vars = resolve_vars(args.vars)
     values = parse_variables(args.vars)
 
     sections = sorted(d for d in os.listdir(RUNBOOK_DIR)
@@ -251,20 +340,33 @@ def main():
     if os.path.exists(args.out):
         if not args.force:
             sys.exit(f"refusing to overwrite existing {args.out} (use --force)")
+        if not os.path.isfile(os.path.join(args.out, MARKER)):
+            sys.exit(f"refusing to replace {args.out}: it was not written by render.py "
+                     f"(no {MARKER} marker) — choose a fresh --out")
         shutil.rmtree(args.out)
     os.makedirs(args.out)
+    with open(os.path.join(args.out, MARKER), "w") as f:
+        f.write("written by proxmox-ceph/scripts/render.py; --force may replace this directory\n")
 
+    out_abs = os.path.abspath(args.out)
+    targets = {os.path.join(RUNBOOK_DIR, s, "README.md"):
+               os.path.join(out_abs, "runbook", s, "README.md") for s in texts}
     rendered = 0
     passed = {}
+    copies = {}
     for section in sections:
         if section not in texts:
             continue
-        text = texts[section]
-        out_dir = os.path.join(args.out, "runbook", section)
-        os.makedirs(out_dir)
-        with open(os.path.join(out_dir, "README.md"), "w") as f:
-            f.write(substitute(text, values, passed))
+        src = os.path.join(RUNBOOK_DIR, section, "README.md")
+        text = rewrite_links(substitute(texts[section], values, passed),
+                             src, targets[src], out_abs, targets, copies)
+        os.makedirs(os.path.dirname(targets[src]))
+        with open(targets[src], "w") as f:
+            f.write(text)
         rendered += 1
+    for src, dst in sorted(copies.items()):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
 
     # Report: literal PLACEHOLDER, defined-but-empty (passed through), and
     # audited values still identical to the shipped template defaults.
@@ -275,13 +377,15 @@ def main():
     template = parse_variables(DEFAULT_VARS)
     same = audit_against_template(values, template)
     is_template = os.path.realpath(args.vars) == os.path.realpath(DEFAULT_VARS)
-    print(f"rendered {rendered} sections -> {args.out}/")
+    print(f"rendered {rendered} sections -> {args.out}/"
+          + (f" (+{len(copies)} diagram(s) copied into diagrams/)" if copies else ""))
     print(f"variables read: {len(values)} from {args.vars}")
     print(f"credential-class names kept as $NAME, never substituted "
           f"({CREDENTIAL_CLASS_TEXT}): {', '.join(kept) if kept else '(none)'}")
     if is_template:
-        print("NOTE: rendering the TEMPLATE itself (no site file) — every audited "
-              "value below is a template default by definition.")
+        print("NOTE: reading the pristine TEMPLATE (named explicitly with --vars) — "
+              "the publisher's check, not a site render; every audited value below "
+              "is a template default by definition.")
     if placeholder:
         print("UNFILLED variables (still PLACEHOLDER) — resolve before deploy:")
         for n in placeholder:

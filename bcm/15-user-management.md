@@ -68,7 +68,10 @@ What the generated script does, and its header says the same:
 - Every account is attempted. Failures are counted and reported, and
   the script exits 1 at the end if any account failed.
 
-> **Password handling:** BCM forces a change on first login. Delete
+> **Password handling:** BCM forces a change on first login
+> **[unverified]** — the 15.3 test login proves it or disproves it; if
+> no change is forced, tell each user to run `passwd` at once and record
+> it in 10. Delete
 > `passwords.csv` once the accounts are created (`shred -u
 > passwords.csv`). Never store real passwords in docs, tickets, chat, or
 > the repo.

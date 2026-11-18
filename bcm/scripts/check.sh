@@ -1,12 +1,14 @@
 #!/bin/bash
 # check.sh — validate the whole template: bash syntax, placeholder-in-
 # command lint, YAML parse, disksetup by-path guard, Python compile,
-# template-variable sanity, Kubernetes CIDR guard, identifier leak scan
+# template-variable sanity, dangling-reference lint (scripts/reflint.py),
+# Kubernetes CIDR guard, identifier leak scan
 # (deny-list read from $MIMIRS_DENYLIST, default
 # ~/.config/mimirs-manual/leak-denylist.txt — kept outside the repo).
 # CHECK_VARS=<file> points the CIDR guard at a site copy of the
-# variables (default: 00-variables.sh; a relative path is relative to
-# bcm/); a networks.csv beside that file
+# variables (default: site-vars.sh in --site mode when it exists, else
+# the 00-variables.sh template; a relative path is relative to bcm/);
+# a networks.csv beside that file
 # (or CHECK_NETWORKS=<file>) joins the overlap set.
 #
 # Two modes:
@@ -118,8 +120,17 @@ EOF
 [ $? -ne 0 ] && fail=1
 
 say "== YAML parse on all code blocks =="
+# L3: PyYAML is the one non-stdlib dependency of this gate. Without it the
+# stage FAILS with a message naming the package (fail closed — the same
+# rule as the Cerberus gate's pdftotext stage), never a bare traceback.
 python3 - <<'EOF'
-import re, glob, yaml
+import re, glob, sys
+try:
+    import yaml
+except ImportError:
+    print("FAIL PyYAML not installed — the YAML blocks cannot be verified, so the "
+          "gate fails (install python3-yaml / pip install pyyaml)")
+    sys.exit(1)
 fails = 0
 for fn in sorted(glob.glob("*.md")):
     for m in re.finditer(r'```yaml\n(.*?)```', open(fn).read(), re.S):
@@ -208,6 +219,14 @@ exit(fails)
 EOF
 [ $? -ne 0 ] && fail=1
 
+say "== dangling-reference lint (sections, files, passes, ranges) =="
+# Fails closed (Brief M6 / review M27): every section number (06.7),
+# file name (12-disk-layouts.md, scripts/…), pass name (runbook.py X, and
+# any list of passes) and section range ("01 → 16") in the docs, the
+# variables template, the scripts and the front door must land on
+# something that exists. Self-tested inside scripts/reflint.py.
+python3 scripts/reflint.py || fail=1
+
 say "== Kubernetes CIDR guard =="
 # Fails closed (C1): each K8s net/mask must be a valid network address,
 # and neither K8s range may overlap a site network, a DNS host, the admin
@@ -216,7 +235,12 @@ say "== Kubernetes CIDR guard =="
 # file as networks.csv — or CHECK_NETWORKS=<file> names one — its
 # networks join the overlap set. This sees only the plan in these files —
 # the customer's existing networks are an intake question (00a).
-CHECK_VARS="${CHECK_VARS:-00-variables.sh}" CHECK_NETWORKS="${CHECK_NETWORKS:-}" python3 - <<'EOF'
+# Which file: CHECK_VARS if set; in --site mode the site file
+# (site-vars.sh) when it exists; otherwise the template itself.
+if [ -z "${CHECK_VARS:-}" ]; then
+    if [ "$site_mode" -eq 1 ] && [ -f site-vars.sh ]; then CHECK_VARS=site-vars.sh; else CHECK_VARS=00-variables.sh; fi
+fi
+CHECK_VARS="$CHECK_VARS" CHECK_NETWORKS="${CHECK_NETWORKS:-}" python3 - <<'EOF'
 import os, sys
 sys.path.insert(0, "scripts")
 from runbook import load_vars, cidr_guard   # one guard: check.sh and `runbook.py vars`
@@ -375,34 +399,78 @@ sed 's|^export K8S_POD_NET=.*|export K8S_POD_NET="10.10.0.0"|' 00-variables.sh >
 ./scripts/runbook.py --vars "$SMOKE/overlap-vars.sh" vars >/dev/null 2>&1 \
     && sfail "vars pass: planted K8s CIDR overlap not refused"
 
-./scripts/runbook.py --vars 00-variables.sh networks --dry-run >/dev/null 2>&1 || sfail "networks --dry-run"
-./scripts/runbook.py --vars 00-variables.sh networks --networks scripts/networks-template.csv --dry-run >/dev/null 2>&1 || sfail "networks --networks --dry-run"
-grep -q "grep -qx 'mgmtnet'" <<<"$(./scripts/runbook.py --vars 00-variables.sh networks --dry-run 2>/dev/null)" \
+# Site-file pattern (H5 / Fable B3): passes read bcm/site-vars.sh (or
+# --vars FILE, before or after the pass name); the pristine template is
+# refused by every pass but `vars`/`render` named explicitly; no site
+# file at all is exit 2. The smoke runs against a scratch site copy.
+mkdir -p "$SMOKE/site"; cp 00-variables.sh "$SMOKE/site/site-vars.sh"
+SITEV="$SMOKE/site/site-vars.sh"
+./scripts/runbook.py --vars 00-variables.sh images --dry-run >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] || sfail "site file: the pristine template was not refused by images (rc=$rc)"
+./scripts/runbook.py images --vars 00-variables.sh --dry-run >/dev/null 2>&1 \
+    && sfail "site file: template refused only when --vars precedes the pass"
+if [ ! -e site-vars.sh ]; then
+    ./scripts/runbook.py images --dry-run >/dev/null 2>&1; rc=$?
+    [ "$rc" -eq 2 ] || sfail "site file: no site-vars.sh and no --vars did not exit 2 (rc=$rc)"
+    ./scripts/generate-nodes.py --skeleton --gpus 1 >/dev/null 2>&1 \
+        && sfail "site file: generate-nodes --skeleton ran without a site file"
+else
+    say "NOTE site-vars.sh exists in the tree — the no-site-file refusal test is skipped"
+fi
+./scripts/generate-nodes.py --skeleton --vars 00-variables.sh --gpus 1 >/dev/null 2>&1 \
+    && sfail "site file: generate-nodes --skeleton accepted the pristine template"
+./scripts/runbook.py images --vars "$SITEV" --dry-run >/dev/null 2>&1 \
+    || sfail "site file: --vars after the pass name not honored"
+# L1: --exec BEFORE the pass name must reach the pass (it used to be
+# overwritten back to dry-run). Off a head node, exec refuses for want of
+# cmsh — that refusal is the proof the flag arrived. --dry-run after the
+# pass name wins over an earlier --exec.
+if ! command -v cmsh >/dev/null 2>&1; then
+    l1="$(./scripts/runbook.py --vars "$SITEV" --exec images </dev/null 2>&1 >/dev/null)"; rc=$?
+    { [ "$rc" -ne 0 ] && grep -q 'cmsh` is not on PATH' <<<"$l1"; } \
+        || sfail "L1: --exec before the pass name did not reach the pass (rc=$rc)"
+    ./scripts/runbook.py --vars "$SITEV" --exec images --dry-run >/dev/null 2>&1 \
+        || sfail "L1: --dry-run after the pass name did not win over an earlier --exec"
+fi
+
+./scripts/runbook.py --vars "$SITEV" networks --dry-run >/dev/null 2>&1 || sfail "networks --dry-run"
+./scripts/runbook.py --vars "$SITEV" networks --networks scripts/networks-template.csv --dry-run >/dev/null 2>&1 || sfail "networks --networks --dry-run"
+# L4: an unquoted comma (extra field) and a CSV that disagrees with the
+# site file on a stock network are both refused.
+sed 's|^usernet,.*|usernet,10.10.13.0/24,10.10.13.1,no,add,User access (MetalLB, ingress)|' \
+    scripts/networks-template.csv > "$SMOKE/comma.csv"
+grep -q 'quote a field that contains a comma' <<<"$(./scripts/runbook.py --vars "$SITEV" networks --networks "$SMOKE/comma.csv" --dry-run 2>&1)" \
+    || sfail "networks L4: an unquoted comma in notes was not refused"
+sed 's|^storagenet,10.10.12.0/24,|storagenet,10.10.99.0/24,|' scripts/networks-template.csv > "$SMOKE/drift.csv"
+grep -q 'REFUSED: networks.csv disagrees with the site variables file' \
+        <<<"$(./scripts/runbook.py --vars "$SITEV" networks --networks "$SMOKE/drift.csv" --dry-run 2>&1)" \
+    || sfail "networks L4: CSV/site-file drift on a stock network was not refused"
+grep -q "grep -qx 'mgmtnet'" <<<"$(./scripts/runbook.py --vars "$SITEV" networks --dry-run 2>/dev/null)" \
     || sfail "networks pass: add-or-verify check missing from the dry-run"
-./scripts/runbook.py --vars 00-variables.sh images --dry-run >/dev/null 2>&1 || sfail "images --dry-run"
-grep -q 'patch storageclass local-path' <<<"$(./scripts/runbook.py --vars 00-variables.sh storage --plan 7a --dry-run 2>/dev/null)" \
+./scripts/runbook.py --vars "$SITEV" images --dry-run >/dev/null 2>&1 || sfail "images --dry-run"
+grep -q 'patch storageclass local-path' <<<"$(./scripts/runbook.py --vars "$SITEV" storage --plan 7a --dry-run 2>/dev/null)" \
     || sfail "storage 7a: local-path un-default step missing"
-./scripts/runbook.py --vars 00-variables.sh storage --plan 7b --dry-run >/dev/null 2>&1 || sfail "storage 7b --dry-run"
+./scripts/runbook.py --vars "$SITEV" storage --plan 7b --dry-run >/dev/null 2>&1 || sfail "storage 7b --dry-run"
 
 # disklayouts: no XML -> fails with the procedure; bad XML -> refused;
 # by-path XML -> dry-run OK (one node, then category).
-grep -q 'ls -l /dev/disk/by-path' <<<"$(./scripts/runbook.py --vars 00-variables.sh disklayouts 2>&1)" \
+grep -q 'ls -l /dev/disk/by-path' <<<"$(./scripts/runbook.py --vars "$SITEV" disklayouts 2>&1)" \
     || sfail "disklayouts: collection procedure not printed"
 printf '<diskSetup><device><blockdev>/dev/nvme0n1</blockdev></device></diskSetup>\n' > "$SMOKE/bad.xml"
 printf '<diskSetup><device><blockdev>/dev/disk/by-path/pci-0000:11:00.0-nvme-1</blockdev></device></diskSetup>\n' > "$SMOKE/good.xml"
-grep -q '^REFUSED' <<<"$(./scripts/runbook.py --vars 00-variables.sh disklayouts --layout "$SMOKE/bad.xml" 2>&1)" \
+grep -q '^REFUSED' <<<"$(./scripts/runbook.py --vars "$SITEV" disklayouts --layout "$SMOKE/bad.xml" 2>&1)" \
     || sfail "disklayouts: kernel-name XML not refused"
-./scripts/runbook.py --vars 00-variables.sh disklayouts --layout "$SMOKE/good.xml" --node gpu-worker-1 >/dev/null 2>&1 \
+./scripts/runbook.py --vars "$SITEV" disklayouts --layout "$SMOKE/good.xml" --node gpu-worker-1 >/dev/null 2>&1 \
     || sfail "disklayouts: by-path XML rejected"
 # D3 override: needs a reason; with one, proceeds, names reason + values,
 # and appends its durable record to disk-layouts/OVERRIDES.log beside the
 # variables file. The override runs against a scratch copy of the
 # variables, so the record lands in $SMOKE, never in the tree.
 ovl_before="$(stat -c '%s %Y' disk-layouts/OVERRIDES.log 2>/dev/null || echo absent)"
-mkdir -p "$SMOKE/ovr"; cp 00-variables.sh "$SMOKE/ovr/00-variables.sh"
-./scripts/runbook.py --vars "$SMOKE/ovr/00-variables.sh" disklayouts --layout "$SMOKE/bad.xml" --allow-non-by-path >/dev/null 2>&1 \
+mkdir -p "$SMOKE/ovr"; cp 00-variables.sh "$SMOKE/ovr/site-vars.sh"
+./scripts/runbook.py --vars "$SMOKE/ovr/site-vars.sh" disklayouts --layout "$SMOKE/bad.xml" --allow-non-by-path >/dev/null 2>&1 \
     && sfail "disklayouts: override accepted without --reason"
-ovr="$(./scripts/runbook.py --vars "$SMOKE/ovr/00-variables.sh" disklayouts --layout "$SMOKE/bad.xml" --node gpu-worker-1 \
+ovr="$(./scripts/runbook.py --vars "$SMOKE/ovr/site-vars.sh" disklayouts --layout "$SMOKE/bad.xml" --node gpu-worker-1 \
         --allow-non-by-path --reason "smoke-override-reason" 2>&1)" || sfail "disklayouts: override with --reason refused"
 grep -q 'BY-PATH OVERRIDE IN USE' <<<"$ovr" && grep -q 'smoke-override-reason' <<<"$ovr" && grep -q '/dev/nvme0n1' <<<"$ovr" \
     || sfail "disklayouts: override warning does not name the reason and the non-by-path value"
@@ -413,24 +481,31 @@ grep -q 'pass=disklayouts .*scope=device gpu-worker-1 .*reason=smoke-override-re
 # who can write a read-only file)
 chmod a-w "$SMOKE/ovr/disk-layouts/OVERRIDES.log" 2>/dev/null
 if [ -f "$SMOKE/ovr/disk-layouts/OVERRIDES.log" ] && [ ! -w "$SMOKE/ovr/disk-layouts/OVERRIDES.log" ]; then
-  ./scripts/runbook.py --vars "$SMOKE/ovr/00-variables.sh" disklayouts --layout "$SMOKE/bad.xml" --node gpu-worker-1 \
+  ./scripts/runbook.py --vars "$SMOKE/ovr/site-vars.sh" disklayouts --layout "$SMOKE/bad.xml" --node gpu-worker-1 \
       --allow-non-by-path --reason "smoke" >/dev/null 2>&1 && sfail "disklayouts: an override that could not be recorded was allowed"
 fi
 chmod u+w "$SMOKE/ovr/disk-layouts/OVERRIDES.log" 2>/dev/null
 printf '<diskSetup><device></device></diskSetup>\n' > "$SMOKE/empty.xml"
-./scripts/runbook.py --vars "$SMOKE/ovr/00-variables.sh" disklayouts --layout "$SMOKE/empty.xml" --node gpu-worker-1 \
+./scripts/runbook.py --vars "$SMOKE/ovr/site-vars.sh" disklayouts --layout "$SMOKE/empty.xml" --node gpu-worker-1 \
     --allow-non-by-path --reason "smoke" >/dev/null 2>&1 && sfail "disklayouts: override waived a layout with no <blockdev>"
 
 # generate-nodes: the skeleton must NOT validate; a filled copy must.
-./scripts/generate-nodes.py --skeleton --ctrl 1 --workers 1 --gpus 2 > "$SMOKE/skel.csv" 2>/dev/null || sfail "generate-nodes --skeleton"
+./scripts/generate-nodes.py --skeleton --vars "$SITEV" --ctrl 1 --workers 1 --gpus 2 > "$SMOKE/skel.csv" 2>/dev/null || sfail "generate-nodes --skeleton"
+grep -q ',00:00:5e:00:53:[0-9a-f][0-9a-f],' "$SMOKE/skel.csv" || sfail "generate-nodes: skeleton MACs are not RFC 7042 documentation MACs"
+grep -q '00:50:56:b3:' "$SMOKE/skel.csv" && sfail "generate-nodes: skeleton still uses the pre-M6 VMware-OUI pattern"
+sed 's/00:00:5e:00:53:/00:50:56:b3:00:/' "$SMOKE/skel.csv" > "$SMOKE/legacy.csv"
+grep -q 'SKELETON' <<<"$(./scripts/generate-nodes.py --check "$SMOKE/legacy.csv" 2>&1)" \
+    || sfail "generate-nodes --check: pre-M6 skeleton MACs (00:50:56:b3:) not refused"
+./scripts/generate-nodes.py --skeleton --vars "$SITEV" --ctrl 3 --gpus 150 --workers 110 >/dev/null 2>&1 \
+    && sfail "generate-nodes: a skeleton past the 255 documentation MACs was not refused"
 grep -q 'SKELETON' <<<"$(./scripts/generate-nodes.py --check "$SMOKE/skel.csv" 2>&1)" \
     || sfail "generate-nodes --check: skeleton MACs not refused"
-sed 's/00:50:56:b3:/02:5e:10:aa:/' "$SMOKE/skel.csv" > "$SMOKE/filled.csv"
+sed 's/00:00:5e:00:53:/02:5e:10:aa:00:/' "$SMOKE/skel.csv" > "$SMOKE/filled.csv"
 ./scripts/generate-nodes.py --check "$SMOKE/filled.csv" >/dev/null 2>&1 || sfail "generate-nodes --check: filled inventory rejected"
 grep -q '^gpu-worker-1,' "$SMOKE/skel.csv" || sfail "generate-nodes: GPU hostnames don't follow \$GPU_WORKERS"
-./scripts/generate-nodes.py "$SMOKE/filled.csv" > "$SMOKE/prov.sh" 2>/dev/null && bash -n "$SMOKE/prov.sh" \
+./scripts/generate-nodes.py --vars "$SITEV" "$SMOKE/filled.csv" > "$SMOKE/prov.sh" 2>/dev/null && bash -n "$SMOKE/prov.sh" \
     || sfail "generate-nodes: generated script fails bash -n"
-./scripts/generate-nodes.py --skeleton --gpus 200 >/dev/null 2>&1 && sfail "generate-nodes: BMC overflow not refused"
+./scripts/generate-nodes.py --skeleton --vars "$SITEV" --gpus 200 >/dev/null 2>&1 && sfail "generate-nodes: BMC overflow not refused"
 grep -q 'layoutgate --category' "$SMOKE/prov.sh" || sfail "generate-nodes: provision script has no 03.4 layout gate"
 
 # nodes: the 03.4 fleet gate (I2, widened to devices — Q7), against a stub
@@ -456,17 +531,17 @@ for c in $(tail -n +2 "$SMOKE/filled.csv" | cut -d, -f5 | sort -u); do cp "$SMOK
 gpu_cat="$(grep ',gpu,' "$SMOKE/filled.csv" | head -1 | cut -d, -f5)"
 cp "$SMOKE/bad.xml" "$SMOKE/cats/$gpu_cat.xml"
 : > "$SMOKE/cmsh.log"
-g="$(gate ./scripts/runbook.py --vars 00-variables.sh nodes --inventory "$SMOKE/filled.csv" --exec </dev/null 2>&1)" \
+g="$(gate ./scripts/runbook.py --vars "$SITEV" nodes --inventory "$SMOKE/filled.csv" --exec </dev/null 2>&1)" \
     && sfail "nodes gate: kernel-path category layout not refused"
 grep -q "category $gpu_cat" <<<"$g" && grep -q '/dev/nvme0n1' <<<"$g" \
     || sfail "nodes gate: refusal does not name the category and the offending value"
 grep -q 'add physicalnode' "$SMOKE/cmsh.log" && sfail "nodes gate: an add command ran despite the refusal"
 rm "$SMOKE/cats/$gpu_cat.xml"
-gate ./scripts/runbook.py --vars 00-variables.sh nodes --inventory "$SMOKE/filled.csv" --exec </dev/null >/dev/null 2>&1 \
+gate ./scripts/runbook.py --vars "$SITEV" nodes --inventory "$SMOKE/filled.csv" --exec </dev/null >/dev/null 2>&1 \
     && sfail "nodes gate: category with no layout not refused"
 cp "$SMOKE/good.xml" "$SMOKE/cats/$gpu_cat.xml"
 : > "$SMOKE/cmsh.log"
-echo YES | gate ./scripts/runbook.py --vars 00-variables.sh nodes --inventory "$SMOKE/filled.csv" --exec >/dev/null 2>&1 \
+echo YES | gate ./scripts/runbook.py --vars "$SITEV" nodes --inventory "$SMOKE/filled.csv" --exec >/dev/null 2>&1 \
     || sfail "nodes gate: by-path inventory refused"
 grep -q 'add physicalnode' "$SMOKE/cmsh.log" || sfail "nodes gate: by-path inventory did not provision"
 cp "$SMOKE/bad.xml" "$SMOKE/cats/$gpu_cat.xml"
@@ -478,7 +553,7 @@ cp "$SMOKE/good.xml" "$SMOKE/cats/$gpu_cat.xml"
 printf 'PhysicalNode  gpu-worker-1  02:5e:10:aa:00:02  %s  10.10.15.53\n' "$gpu_cat" > "$SMOKE/devices.txt"
 cp "$SMOKE/bad.xml" "$SMOKE/devs/gpu-worker-1.xml"
 : > "$SMOKE/cmsh.log"
-g="$(gate ./scripts/runbook.py --vars 00-variables.sh nodes --inventory "$SMOKE/filled.csv" --exec </dev/null 2>&1)" \
+g="$(gate ./scripts/runbook.py --vars "$SITEV" nodes --inventory "$SMOKE/filled.csv" --exec </dev/null 2>&1)" \
     && sfail "nodes gate: device-level kernel-path layout not refused"
 grep -q 'device gpu-worker-1' <<<"$g" && grep -q '/dev/nvme0n1' <<<"$g" \
     || sfail "nodes gate: device-level refusal does not name the device and the offending value"
@@ -488,7 +563,7 @@ gate bash "$SMOKE/prov.sh" >/dev/null 2>&1 && sfail "provision-nodes.sh: ran pas
 grep -q 'add physicalnode' "$SMOKE/cmsh.log" && sfail "provision-nodes.sh: an add ran despite a device-level refusal"
 cp "$SMOKE/good.xml" "$SMOKE/devs/gpu-worker-1.xml"
 : > "$SMOKE/cmsh.log"
-echo YES | gate ./scripts/runbook.py --vars 00-variables.sh nodes --inventory "$SMOKE/filled.csv" --exec >/dev/null 2>&1 \
+echo YES | gate ./scripts/runbook.py --vars "$SITEV" nodes --inventory "$SMOKE/filled.csv" --exec >/dev/null 2>&1 \
     || sfail "nodes gate: device-level by-path layout refused"
 grep -q 'device ; use gpu-worker-1 ; get disksetup' "$SMOKE/cmsh.log" || sfail "nodes gate: device-level layout not read"
 grep -q 'add physicalnode' "$SMOKE/cmsh.log" || sfail "nodes gate: device-level by-path inventory did not provision"
@@ -508,19 +583,64 @@ ovl_after="$(stat -c '%s %Y' disk-layouts/OVERRIDES.log 2>/dev/null || echo abse
 ./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/render" >/dev/null 2>&1 || sfail "render"
 [ -f "$SMOKE/render/README.md" ] && [ -f "$SMOKE/render/16-infiniband.md" ] || sfail "render: docs missing"
 [ ! -f "$SMOKE/render/99-role-mapping.md" ] || sfail "render: 99-role-mapping.md not skipped"
-grep -q 'set password \$BMC_PASSWORD' "$SMOKE/render/03-images-categories-nodes.md" \
+grep -q '"\$BMC_PASSWORD" | cmsh -q' "$SMOKE/render/03-images-categories-nodes.md" \
     || sfail "render: \$BMC_PASSWORD did not survive as a reference"
-grep -q -- '--docker-password="\$NGC_API_KEY"' "$SMOKE/render/09-nim-operator.md" \
+grep -qF -- 'printf '\''%s'\'' "$NGC_API_KEY"' "$SMOKE/render/09-nim-operator.md" \
     || sfail "render: \$NGC_API_KEY did not survive as a reference"
 grep -rqE '<(BMC-PASSWORD|NGC-API-KEY|BCM-PRODUCT-KEY)>' "$SMOKE/render" \
     && sfail "render: a credential placeholder was substituted into the guide"
-sed 's|^export BMC_PASSWORD=.*|export BMC_PASSWORD="smoke-LiveValue-93xq"|' 00-variables.sh > "$SMOKE/live-vars.sh"
-cp ./*.md "$SMOKE/" 2>/dev/null
-trip="$(./scripts/runbook.py --vars "$SMOKE/live-vars.sh" render --out "$SMOKE/render-live" 2>&1 >/dev/null)"
-grep -q 'LIVE SECRETS LOADED NEAR A DELIVERABLE' <<<"$trip" || sfail "render tripwire did not fire"
-grep -q 'BMC_PASSWORD' <<<"$trip" || sfail "render tripwire did not name BMC_PASSWORD"
+# L2: fresh directory every time; --force replaces only a previous render;
+# links resolve inside the deliverable (diagrams copied in, library-only
+# files named as text).
+./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/render" >/dev/null 2>&1 \
+    && sfail "render L2: an existing --out was overwritten without --force"
+./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/render" --force >/dev/null 2>&1 \
+    || sfail "render L2: --force did not replace a previous render"
+mkdir -p "$SMOKE/foreign" && : > "$SMOKE/foreign/keep.txt"
+./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/foreign" --force >/dev/null 2>&1 \
+    && sfail "render L2: --force replaced a directory render did not write"
+[ -f "$SMOKE/foreign/keep.txt" ] || sfail "render L2: a foreign directory lost its contents"
+[ -f "$SMOKE/render/diagrams/cluster-128.svg" ] || sfail "render L2: README's diagram not copied into the deliverable"
+grep -q 'library file `bcm/00-variables.sh`' "$SMOKE/render/README.md" \
+    || sfail "render L2: link to the variables template not rewritten as a library reference"
+broken="$(python3 -I - "$SMOKE/render" <<'PYEOF'
+import os, re, sys
+out = sys.argv[1]
+for fn in sorted(os.listdir(out)):
+    if fn.endswith(".md"):
+        for m in re.finditer(r"\]\(([^)\s]+)\)", open(os.path.join(out, fn)).read()):
+            t = m.group(1).partition("#")[0]
+            if t and not re.match(r"^[a-z][a-z0-9+.-]*:|^/", t) \
+                    and not os.path.exists(os.path.join(out, t)):
+                print(f"{fn}: {m.group(1)}")
+PYEOF
+)"
+[ -z "$broken" ] || sfail "render L2: links pointing outside the deliverable: $broken"
+# Tripwire, fail-closed (M4 slate #4; Cerberus parity since M5):
+# (a) a live secret in the variables FILE -> render refuses, exit 3,
+#     nothing written, value never printed — both the plain form and a
+#     live default hidden inside ${NAME:-...};
+for form in 'export BMC_PASSWORD="smoke-LiveValue-93xq"' \
+            'export BMC_PASSWORD="${BMC_PASSWORD:-smoke-LiveValue-93xq}"'; do
+    awk -v f="$form" '/^export BMC_PASSWORD=/{print f; next} {print}' 00-variables.sh > "$SMOKE/live-vars.sh"
+    rm -rf "$SMOKE/render-live"
+    trip="$(./scripts/runbook.py --vars "$SMOKE/live-vars.sh" render --out "$SMOKE/render-live" 2>&1 >/dev/null)"; rc=$?
+    [ "$rc" -eq 3 ] || sfail "render tripwire: live secret in the file did not refuse with exit 3 (rc=$rc; ${form%%=*})"
+    [ ! -e "$SMOKE/render-live" ] || sfail "render tripwire: a refused render still wrote output"
+    grep -q 'REFUSED: LIVE SECRETS IN THE VARIABLES FILE' <<<"$trip" || sfail "render tripwire did not fire"
+    grep -q 'BMC_PASSWORD' <<<"$trip" || sfail "render tripwire did not name BMC_PASSWORD"
+    grep -q 'smoke-LiveValue-93xq' <<<"$trip" && sfail "render: the live credential VALUE leaked into the refusal"
+done
+# (b) a live secret only in the ENVIRONMENT (placeholder in the file) ->
+#     warned by name, render succeeds, value absent from guide and output.
+trip="$(BMC_PASSWORD="smoke-LiveValue-93xq" ./scripts/runbook.py --vars "$SITEV" render --out "$SMOKE/render-env" 2>&1 >/dev/null)" \
+    || sfail "render: an environment-held secret made the render fail (must warn only)"
+grep -q 'WARNING: LIVE SECRETS LOADED NEAR A DELIVERABLE (environment)' <<<"$trip" || sfail "render: environment-held secret not warned"
+grep -q 'BMC_PASSWORD: holds a real value (environment)' <<<"$trip" || sfail "render: environment warning does not name BMC_PASSWORD"
 grep -q 'smoke-LiveValue-93xq' <<<"$trip" && sfail "render: the live credential VALUE leaked into the warning"
-grep -rq 'smoke-LiveValue-93xq' "$SMOKE/render-live" && sfail "render: the live credential VALUE leaked into the guide"
+grep -rq 'smoke-LiveValue-93xq' "$SMOKE/render-env" && sfail "render: the live credential VALUE leaked into the guide"
+grep -q '"\$BMC_PASSWORD" | cmsh -q' "$SMOKE/render-env/03-images-categories-nodes.md" \
+    || sfail "render: \$BMC_PASSWORD not kept as a reference with an environment-held secret"
 
 if [ "$smoke" -eq 0 ]; then say "passes: OK"; else fail=1; say "passes: FAILED"; fi
 

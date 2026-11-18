@@ -92,7 +92,7 @@ journalctl -u pve-ha-lrm -u pve-ha-crm --since "10 min ago" | grep -i watchdog
   for id in $HA_PROTECTED_VMS; do
     [[ "$id" =~ ^[0-9]+$ ]] || { echo "FATAL: '$id' in HA_PROTECTED_VMS is not a numeric VMID (format: \"100 101\")" >&2; exit 1; }
     qm config "$id" >/dev/null || { echo "FATAL: VM $id does not exist" >&2; exit 1; }
-    if grep -qx "vm: $id" <<<"$(ha-manager config)"; then
+    if grep -qxE "vm: ?$id" <<<"$(ha-manager config)"; then
       echo "NOTE: vm:$id is already under HA — left as is"
     else
       ha-manager add "$id" --state started
@@ -106,7 +106,7 @@ journalctl -u pve-ha-lrm -u pve-ha-crm --since "10 min ago" | grep -i watchdog
 )
 ```
 
-(`ha-manager config` lists each resource as a `vm: <id>` section header — the already-present check reads that form; **[unverified]** wording on 9.2. If the rule already exists, `rules add` fails and stops the block: inspect it with `ha-manager rules list`.)
+(`ha-manager config` lists each resource as a bare service ID line — `vm:100` in the ha-manager(1) 9.2.14 example output, while `resources.cfg` itself writes `vm: 100`; the already-present check accepts both forms. Verified against https://pve.proxmox.com/pve-docs/ha-manager.1.html (9.2.14). If the rule already exists, `rules add` fails and stops the block: inspect it with `ha-manager rules list`.)
 
 - `--state started` means HA actively keeps the VM running: it starts it if stopped and restarts it on another node if its host fails. Other states: `enabled`, `disabled`, `ignored`, `stopped` (see `man ha-manager`). Change later with `ha-manager set vm:ID --state STATE`.
 - `--nodes` — the site's three hostnames; the VMs prefer these nodes in listed order and restart on the next available one.
@@ -133,10 +133,10 @@ Planned maintenance must not look like a failure to the HA manager, or your roll
 
 ### Cluster-wide HA disarm (firmware days, whole-cluster work)
 
-New in PVE 9.2 — disarm the entire cluster before disruptive maintenance, re-arm after:
+New in PVE 9.2 (Roadmap, 9.2 release notes: "The HA stack can now be disarmed cluster-wide via the new `disarm-ha` and `arm-ha` CRM commands") — disarm the entire cluster before disruptive maintenance, re-arm after. `disarm-ha` **requires** a resource mode (ha-manager(1), 9.2.14): `freeze` keeps every resource in its current state but applies no new commands or state changes and reacts to no failures; `ignore` removes the resources from HA tracking so you can manage them by hand. This runbook uses `freeze`:
 
 ```bash
-ha-manager crm-command disarm-ha      # releases all watchdogs; resources keep running
+ha-manager crm-command disarm-ha freeze   # releases all watchdogs; resources keep running, frozen
 # ... do the maintenance ...
 ha-manager crm-command arm-ha         # re-arm afterwards
 ```
@@ -151,7 +151,7 @@ ha-manager crm-command node-maintenance enable node-2
 ha-manager crm-command node-maintenance disable node-2
 ```
 
-Enabling maintenance on a node gracefully migrates its HA resources to the other nodes first (new in 9.2). Do the work, disable maintenance, resources can be moved back.
+Enabling maintenance on a node migrates its HA resources to the other available nodes (chosen by the HA rules and the CRS mode); disabling it moves back every service that was on the node when maintenance was enabled (ha-manager(1), 9.2.14, "Node Maintenance Mode"). This is not new in 9.2 — the earlier "(new in 9.2)" label was wrong. Do the work, then disable maintenance.
 
 ---
 

@@ -1,11 +1,11 @@
 # 3-Node Hyperconverged Ceph Runbook — Starting Point
 
-_Drafted 2026-10-07. Customer-anonymized throughout (role-based names only). Full step-by-step runbook is parked until the open questions are answered. This is a reusable template — built customer-agnostic from day one (lab reuse intended)._
+_Drafted 2026-10-07. Customer-anonymized throughout (role-based names only). **Historical planning record:** this is where the design started, kept for its decisions and original open questions. The full step-by-step runbook is complete and lives under `runbook/` (00 → 07); where this page and the runbook differ, the runbook wins. This is a reusable template — built customer-agnostic from day one (lab reuse intended)._
 
 ## 1. Locked-in design decisions
 
 - **Hyperconverged architecture** — compute and storage on the same nodes. Proxmox VE hypervisor + Ceph on each of the 3 nodes; no separate storage tier.
-- **3 nodes** (4th possible, still being decided) — the minimum for a self-healing Ceph quorum (3 MONs, one per node; the cluster tolerates one node down).
+- **3 nodes** (4th possible, still being decided) — the minimum for Ceph quorum through a node loss (3 MONs, one per node; the cluster stays up and writable with one node down, degraded at two copies — with 3 hosts and size=3 a lost node is **not** re-replicated or healed until it returns).
 - **Internal NVMe OSDs** — Ceph runs on drives physically inside the nodes; no external storage appliance in the data path.
 - **Synchronous replication** — writes replicate synchronously across nodes (target size=3/min_size=2, to be confirmed in the full runbook); no async or external tiering.
 - **External storage arrays off-limits** — any high-end storage array on the site network is excluded from the design; not to be spec'd or plumbed in.
@@ -23,7 +23,7 @@ Per node — ThinkSystem SR650 V4:
 - 1x RAID 940-8i 4GB tri-mode (SAS/SATA/NVMe U.3 x1, JBOD-capable)
 - 2x 1300W Titanium PSU (N+N), 3yr Premier NBD warranty
 
-Cluster (3 nodes): 144C/288T, 3TB RAM, 23.04TB raw NVMe → ~7.68TB usable at size=3; plan ~5TB usable with headroom. Storage is the binding constraint; SR650 V4 has up to 24 SFF bays (2 populated) — expansion wide open.
+Cluster (3 nodes): 144C/288T, 3TB RAM, 23.04TB raw NVMe → ~7.68TB theoretical at size=3; **plan 3.3 TB usable (≈43% of raw)** — the ceiling modelled on the binding failure, a single OSD lost (its sibling on the same host absorbs its data; see runbook 04). Storage is the binding constraint; SR650 V4 has up to 24 SFF bays (2 populated) — expansion wide open.
 
 ## 2. Open questions — need answers before the full runbook
 
@@ -36,13 +36,13 @@ Cluster (3 nodes): 144C/288T, 3TB RAM, 23.04TB raw NVMe → ~7.68TB usable at si
 1. **Backplane cabling** — are the U.3 NVMe wired direct-to-CPU (x4), or behind the 940-8i (x1 ≈ 2GB/s per drive vs ~14GB/s direct)? Must verify; JBOD, never HW RAID.
 2. **200G cabling (call-out, cables are covered)** — per node 2× 200G into the SN5610s via OSFP-800G → 4× QSFP112-200G breakout DACs (in-rack; 2 DACs cover 3 nodes, exactly 2 cover 4 nodes); land each node's two links on different SN5610s. Cross-rack → breakout AOCs or SM optics. Plus 2–4× Cat6 per node for OCP 1GbE → SN2201 (BOM ships 1/server).
 3. **3 vs 4 nodes** — now purely quorum/capacity (network is a non-issue with the SN5610 fabric). 3 is the quorum sweet spot; 4th adds capacity, no quorum benefit (MONs stay at 3).
-4. **Network topology** — which 2 of the 3 SN5610s carry the Proxmox storage fabric (3rd = AI fabric or spare?); corosync placement (1GbE OCP vs VLAN on the 200G fabric); bonding/MLAG design.
+4. **Network topology** — resolved: two SN5610s carry the Proxmox fabric; corosync has **two links, both required** (link0 on the 1GbE OCP mgmt network, link1 on the Ceph public VLAN over the 200G fabric bond); PBS backup traffic rides **its own VLAN** on the fabric; active-backup bond (LACP/MLAG documented as the alternative).
 5. **Ceph cluster network separation** — dedicated replication/cluster network, or shared with client/frontend traffic? (2× 200G/node gives room either way.)
 6. **Jumbo frames** — MTU 9000 on the Ceph cluster network (feasible — Cumulus on SN5610; still needs the decision).
 7. **Workload profile** — write-heavy? Decides whether read-intensive PM1743s are fine or mixed-use drives are warranted.
 8. **PBS placement** — dedicated host vs. VM, datastore sizing and retention.
 
-**Resolved — fabric and integration:** the high-speed fabric is NVIDIA SN5610 800GbE (Cumulus); the Proxmox cluster lives on Ethernet there. The Q3400 Quantum XDR InfiniBand switch belongs to the AI/GPU side, not Proxmox — no IPoIB for Ceph. SN2201 1GbE switches cover management. **No vendor integration kit (no EveryScale)** — the build team owns integration for this design: it builds the baremetal, so the runbook owns the full physical bring-up verification (outline section 00a).
+**Resolved — fabric and integration:** the high-speed fabric is NVIDIA SN5610 800GbE (Cumulus); the Proxmox cluster lives on Ethernet there. InfiniBand belongs to the GPU side, not Proxmox — no IPoIB for Ceph. SN2201 1GbE switches cover management. **No vendor integration kit (no EveryScale)** — the build team owns integration for this design: it builds the baremetal, so the runbook owns the full physical bring-up verification (outline section 00a).
 
 ## 3. Full runbook section outline (step-by-step comes later)
 

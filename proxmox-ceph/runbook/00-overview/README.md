@@ -39,8 +39,10 @@ the runbook needs adaptation first.
 2. **Proxmox VE 9.2.x**, installed from ISO, using the **no-subscription** package
    repositories. (Substitute the enterprise repo if the site holds subscriptions —
    the repo file is the only change.)
-3. **Ceph Tentacle** (20.2.x). Do not install Squid on greenfield builds (EOL
-   ~Sept/Oct 2026 — re-check https://docs.ceph.com/en/latest/releases/ at deploy time).
+3. **Ceph Tentacle** (20.2.x). Do not install Squid on greenfield builds: its
+   estimated end of life is **2026-12-02** (Ceph active-releases table, checked
+   2026-11-17; Tentacle's is 2027-06-01) — re-check
+   https://docs.ceph.com/en/latest/releases/ at deploy time.
 4. **Synchronous replication, size=3/min_size=2** on all pools. No erasure coding,
    no cache tiering, no async/external tiering.
 5. **Dedicated OSD drives**: the 2x 3.84TB Samsung PM1743 U.3 NVMe per node are
@@ -49,8 +51,9 @@ the runbook needs adaptation first.
    support is x1 ≈ 2 GB/s vs ~14 GB/s direct). The 940-8i runs **JBOD only**, never
    HW RAID. Section 00a verifies both; wrong cabling is a STOP-and-recable event.
 7. **BlueField-3 B3220 in Ethernet NIC mode** (2x 200G). DPU/ECPF mode is out of
-   scope. No InfiniBand for the Proxmox fabric: the Q3400 XDR IB switch is SPARE
-   (AI/GPU side) — **no IPoIB for Ceph**, Ethernet only.
+   scope. **Two SN5610s carry the fabric.** No InfiniBand for the Proxmox
+   fabric: InfiniBand belongs to the GPU side — **no IPoIB for Ceph**,
+   Ethernet only.
 8. **Dedicated PBS host** (separate physical machine). Proxmox docs explicitly
    caution against installing PBS on the hypervisor nodes themselves. It has
    **two** network attachments: its admin address on the mgmt network (GUI,
@@ -85,9 +88,17 @@ the runbook needs adaptation first.
 - LACP/MLAG on the SN5610 pair (documented as the higher-bandwidth *alternative*
   to the recommended active-backup bond, not configured here).
 - Warranty/RMA handling, site power/cooling design beyond the rack check.
-- The spare (3rd) SN5610 and the Q3400 IB switch (AI fabric — separate runbook).
+- Any switch beyond the two SN5610s that carry this fabric, and any
+  InfiniBand fabric (GPU side — §16 of the BCM track).
 
 ## Network plan
+
+> **Flat site? Read the site profile first.** If the site cannot give the
+> segmented plan below — one management /24, per-role data /24s, no
+> separate Ceph VLANs — the Ceph and corosync addressing changes. Read
+> [docs/site-profile-flat.md](../../docs/site-profile-flat.md) **before**
+> filling `site-vars.sh` and before 00a; §02 and §03 assume you already
+> have.
 
 | Network | VLAN | CIDR (placeholder) | MTU | Physical path | Purpose |
 |---|---|---|---|---|---|
@@ -109,8 +120,7 @@ Per-node IP plan (template defaults — resolve in `site-vars.sh`):
 
 Switch naming: `sn5610-a` / `sn5610-b` carry the fabric (see
 [docs/diagrams/cable-diagram.svg](../../docs/diagrams/cable-diagram.svg) for the
-DAC leg → port mapping); `sn2201-mgmt` is the 1GbE management switch. The 3rd
-SN5610 is spare.
+DAC leg → port mapping); `sn2201-mgmt` is the 1GbE management switch.
 
 ## Variables
 

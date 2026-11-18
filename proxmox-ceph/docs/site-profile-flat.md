@@ -27,7 +27,9 @@ real values in `variables.sh`.*
   protects.** A backup server inside its own failure domain is a
   bootstrap trap: cluster down → backups unreachable → restores dead on
   arrival. If the site must be convinced, that sentence is the argument.
-  The PBS host does not join the cluster; quorum stays at 3.
+  The PBS host does not join the cluster; quorum stays at 3. Its backup
+  traffic rides **its own VLAN** (`PBS_VLAN`, 06.1) — never the link that
+  carries corosync link0.
 
 ## Ceph addressing (the flat variant)
 
@@ -48,9 +50,12 @@ traffic's fate.
 at **public + 100** per node. Works, Ceph supports it; accept the
 shared-fate caveat in writing.
 
-**Corosync:** rides the service VLAN (flat sites typically have no
-separate host-mgmt IPs). If the replication VLAN is added, register it
-as corosync's second link.
+**Corosync:** two links, **both required** (00-overview assumption 11 —
+one link is a single point of failure for quorum). link0 rides the
+service VLAN (flat sites typically have no separate host-mgmt IPs);
+link1 rides the added replication VLAN. Under the zero-new-VLAN
+fallback there is no second path on the bond, so the site must provide
+one (a second physical link) — record it; never run on one link.
 
 ## Netris bootstrap (if the site runs Netris)
 

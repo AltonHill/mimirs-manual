@@ -72,10 +72,13 @@ cmsh -c "softwareimage list"
 
 ## 4.4 — Push the image and validate on hardware
 
-```bash
-cmsh
-# device
-# imageupdate -n <gpu-worker-1> -w     (one node at a time)
+An **interactive** `cmsh` session — start it with `cmsh`, then type at
+its prompts (one node at a time; `gpu-worker-1` stands for the node
+you are updating):
+
+```text
+[headnode]% device
+[headnode->device]% imageupdate -n gpu-worker-1 -w
 ```
 
 > If a node-local repair must be retained, `grabimage` the node back

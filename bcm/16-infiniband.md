@@ -1,7 +1,9 @@
 # 16 — InfiniBand / GPU Fabric (Host Level)
 
 > **Prerequisites:** 03 (nodes provisioned). Do this when the site has
-> an InfiniBand fabric (DGX H200/B200/B300 ship NVIDIA Quantum NDR IB).
+> an InfiniBand compute fabric. The rate a healthy port negotiates
+> depends on the **device class** — see 16.1b; there is no single
+> fleet-wide number.
 >
 > **Sourcing note:** neither source guide covered IB host setup — this
 > section is standard DGX/BCM practice. Validate each step against the
@@ -17,6 +19,28 @@
 
 If the site also runs a GPU east-west **Ethernet** fabric, it's just
 another row in `networks.csv` (`gpu-eth`) — no special host config.
+
+## 16.1b — Expected rate per device class
+
+From NVIDIA's DGX user guides (verified 2026-11-17):
+
+| System | Compute-fabric NICs | Per-port rate | Source |
+|---|---|---|---|
+| DGX H100 / H200 | 8× ConnectX-7 single-port | up to 400 Gb/s InfiniBand (NDR) | [DGX H100/H200 User Guide](https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html) |
+| DGX B200 | 8× ConnectX-7 single-port | up to 400 Gb/s InfiniBand (NDR) | [DGX B200 User Guide](https://docs.nvidia.com/dgx/dgxb200-user-guide/introduction-to-dgxb200.html) |
+| DGX B300 | 8× ConnectX-8 | 800 Gb/s InfiniBand/Ethernet (XDR) | [DGX B300 User Guide](https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html) |
+
+The storage/in-band-management NICs are a different class (BlueField-3
+on B200/B300, up to 400 Gb/s; ConnectX-7 dual-port on H100/H200) — judge
+them against their own row of the site's design, never the compute
+fabric's. A ConnectX-8 can also be configured for XDR Lite (400 Gb/s)
+per the [ConnectX-8 SuperNIC user
+manual](https://docs.nvidia.com/networking/display/nvidia-connectx-8-supernic-user-manual.pdf):
+if the site's fabric is NDR (Quantum-2) or the design says XDR Lite,
+400 is the expected rate for those ports — record that in 10. Mixed
+fleets: one expected rate per host type, like one category per type.
+**[unverified]** the exact `ibstat` rate string for an XDR port
+(expected `Rate: 800`) — confirm on the first B300 and record it.
 
 ## 16.2 — OFED in the software image
 
@@ -44,12 +68,18 @@ systemctl enable --now opensm
 Validate from any GPU node:
 
 ```bash
-ibstat | grep -E 'CA type|State|Rate|Link layer'
-# expect per port: State: Active, Rate: 400 (NDR), Link layer: InfiniBand
+ibstat | grep -E '^CA |CA type|State|Rate|Link layer'
+# expect per compute-fabric port: State: Active, Link layer: InfiniBand,
+# Rate = the 16.1b rate for THIS host type (ConnectX-7: 400; ConnectX-8: 800,
+# or 400 where the design says NDR / XDR Lite). A port below its class's
+# rate negotiated down (cable, optic, switch port) — that is a FAIL.
 ibv_devinfo | grep -E 'hca_id|fw_ver|node_guid'
 ```
 
-- [ ] Every IB port `Active` at the expected rate (NDR = 400 Gb/s)
+- [ ] Every compute-fabric port `Active` at its device class's expected
+      rate (16.1b) — checked per host type, never against one fleet number
+- [ ] Storage/management ports judged against their own class, not the
+      compute fabric's
 - [ ] One SM visible per fabric (`ibstat` shows `SM lid`)
 
 ## 16.3b — UFM servers (when the site runs UFM)

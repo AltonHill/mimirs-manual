@@ -1,6 +1,7 @@
 # 01 — Environment & IP Plan
 
-> **Prerequisites:** `00-variables.sh` filled in and sourced.
+> **Prerequisites:** `site-vars.sh` (a copy of the `00-variables.sh`
+> template) filled in and sourced.
 > **Gate:** do not proceed until the values below are approved — they feed
 > certificates, installer configs, and DNS.
 
@@ -13,9 +14,9 @@
 | `usernet` | `$NET_USER` | `user.cluster` | `$GW_USER` | User/service access (MetalLB, ingress) |
 | `mgmtnet` | `$NET_OOB` | `oobnet.cluster` | `$GW_OOB` | Hardware/BMC management |
 
-> **Field note [client]:** the client ran segmented as above. The lab
-> ran flat — everything on `10.10.13.0/24` (`internalnet`), with mgmt on
-> `.15` and IPMI on `.12`. Either works; segmented is the template default.
+> **Layouts:** segmented, as above, is the template default and the
+> production-hardened choice. A flat layout — every role on one /24 under
+> `internalnet` — also works; record the choice (and why) in 10.
 >
 > **Automate it:** once the table above is approved,
 > `scripts/runbook.py networks` creates/aligns the networks. **In 01 it
@@ -26,7 +27,7 @@
 > `scripts/networks-template.csv` to `networks.csv` and add rows for
 > extra fabrics (GPU east-west Ethernet/InfiniBand, IPMI, ...) — no code
 > changes needed. Without `--networks`, the pass uses the stock
-> 4-network plan from `00-variables.sh`.
+> 4-network plan from the site variables file.
 
 ```bash
 cp scripts/networks-template.csv networks.csv
@@ -89,8 +90,10 @@ Required forward + reverse records (generate from your plan):
 ## DHCP
 
 Reserve static addresses **outside** the DHCP pool, or explicitly exclude
-them. The client plan had statics (`.50–.55`) overlapping the pool
-(`.50–.150`) — don't repeat that.
+them. Record the pool as `DHCP_POOL` (`FIRST-LAST`) in `site-vars.sh` —
+it ships empty, and 01 does not sign off until it is set. The client
+plan had statics (`.50–.55`) overlapping the pool (`.50–.150`) — don't
+repeat that.
 
 ## Preflight verification
 
@@ -103,6 +106,6 @@ done
 ```
 
 - [ ] Forward + reverse DNS resolves for every node and service FQDN
-- [ ] DHCP scope excludes all static IPs
+- [ ] `DHCP_POOL` set in `site-vars.sh`; the DHCP scope excludes all static IPs
 - [ ] Service subnet approved; MetalLB segment matches it
 - [ ] Firewall allows the required paths (BCM, k8s API, ingress)

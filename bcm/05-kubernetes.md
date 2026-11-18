@@ -8,7 +8,11 @@
 cm-kubernetes-setup
 ```
 
-Walk the dialog:
+Walk the dialog (interactive — the table is what you select at each
+screen). **[unverified]** that the dialog asks for each range as
+separate network and netmask fields, as tabulated; if it asks for one
+CIDR, enter `$K8S_SERVICE_NET/$K8S_SERVICE_MASK` and
+`$K8S_POD_NET/$K8S_POD_MASK` — the values are the same either way:
 
 | Prompt | Selection |
 |---|---|

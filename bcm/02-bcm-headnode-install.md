@@ -20,9 +20,18 @@
 request-license
 ```
 
-Provide when prompted:
+`request-license` is **interactive**: it prompts for each field below,
+and nothing expands a shell variable typed at its prompts. Print the non-secret answers
+first, in your shell, and type them in. The product key is a credential
+— paste it from the site's vault, never from a file:
 
+```bash
+printf 'Organization  %s\nCluster Name  %s\n' "$CLIENT_ORG" "$CLUSTER_NAME"
 ```
+
+Provide when prompted (typed at the prompts — not a script):
+
+```text
 Product Key     $BCM_PRODUCT_KEY
 Country         <COUNTRY>
 State           <STATE>
@@ -65,10 +74,23 @@ alias k='kubectl'
 alias taintlist='kubectl get nodes -o jsonpath={range\ .items[*]}{.metadata.name}{"\t"}{.spec.taints}{"\n"}{end}'
 # Run:ai aliases
 alias validate-runai='kubectl get pods -n runai-backend && kubectl get pods -n runai && kubectl get pods -n gpu-operator'
-alias get-clusterlogs='curl -s https://raw.githubusercontent.com/runai-professional-services/utilities/refs/heads/main/runai_log_collector/start.sh | bash'
-alias get-gpulogs='curl -s https://raw.githubusercontent.com/runai-professional-services/utilities/refs/heads/main/gpu_operator_log_dump/start.sh | bash'
+# log collectors: a local copy at a reviewed commit (block below), never main piped to bash
+alias get-clusterlogs='bash /root/runai-utils/runai_log_collector/start.sh'
+alias get-gpulogs='bash /root/runai-utils/gpu_operator_log_dump/start.sh'
 EOF
 source ~/.bashrc
+```
+
+The two log-collector aliases run a **local copy** of the Run:ai
+professional-services utilities, checked out at a commit you have read
+— not whatever `main` serves at the moment of an incident (L10). Pin
+the commit once, record it in 10, and re-pin deliberately:
+
+```bash
+git clone https://github.com/runai-professional-services/utilities.git /root/runai-utils
+git -C /root/runai-utils log --oneline -5      # read what you are about to trust
+RUNAI_UTILS_COMMIT="${RUNAI_UTILS_COMMIT:?set RUNAI_UTILS_COMMIT to the reviewed commit hash}"
+git -C /root/runai-utils checkout --detach "$RUNAI_UTILS_COMMIT"
 ```
 
 > **Field note:** the lab's alias set also included per-category reboot
@@ -128,7 +150,7 @@ cmsh -c "network; list"       # every row of the plan present, values as approve
 ```
 
 (No `networks.csv` from 01? Drop `--networks`. The pass then uses the
-stock 4-network plan from `00-variables.sh`.)
+stock 4-network plan from `site-vars.sh`.)
 
 ## Verification
 
@@ -136,4 +158,4 @@ stock 4-network plan from `00-variables.sh`.)
 - [ ] The value check above printed `OK: AdvancedConfig carries DeviceResolveAnyMAC=1`
 - [ ] `cmsh -c "network; list"` matches 01's approved plan (2.5)
 - [ ] `uname -r` matches `$KERNEL_VER` (or record the actual version and
-      update `00-variables.sh` — 03 pins images to it)
+      update `site-vars.sh` — 03 pins images to it)

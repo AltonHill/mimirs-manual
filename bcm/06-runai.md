@@ -115,6 +115,14 @@ kubectl create secret tls runai-cluster-inference-tls-secret -n runai \
   --key=/cm/images/runai/inference.key
 ```
 
+> **Expiry:** this certificate is good for **365 days** (`-days 365`);
+> the 6.1 CA for 3650. Record both end dates in 10 with a renewal owner
+> — the 11.3 handoff checks they are there:
+> `openssl x509 -enddate -noout -in /cm/images/runai/inference.crt`.
+> Renewal is this block again (new key, same secret name — delete the
+> old `runai-cluster-inference-tls-secret` first, or `kubectl create …
+> --dry-run=client -o yaml | kubectl apply -f -`).
+
 ## 6.4 — Gateway listeners (kgateway) **[restored]**
 
 > Run:ai on kgateway ships **without** the `https-workloads` listener —
@@ -195,7 +203,7 @@ spec:
   - name: https
     protocol: HTTPS
     port: 443
-    hostname: "${FQDN_RUNAI:?source 00-variables.sh first}"
+    hostname: "${FQDN_RUNAI:?source site-vars.sh first}"
     tls:
       mode: Terminate
       certificateRefs:
@@ -204,7 +212,7 @@ spec:
   - name: https-workloads
     protocol: HTTPS
     port: 443
-    hostname: "*.${FQDN_RUNAI:?source 00-variables.sh first}"
+    hostname: "*.${FQDN_RUNAI:?source site-vars.sh first}"
     tls:
       mode: Terminate
       certificateRefs:
@@ -341,10 +349,16 @@ done
   reverted, so placement goes on kgateway's own knob, a
   `GatewayParameters` pod template referenced from the Gateway. It
   carries the same `runai-system` affinity and control-plane toleration
-  as the backend above. **[unverified]** The API group/version and the
-  `kube.podTemplate` field path are as documented for kgateway v2.x.
-  Check the installed CRD first (`kubectl explain
-  gatewayparameters.spec.kube.podTemplate`). If the Gateway already
+  as the backend above. The API group/version
+  (`gateway.kgateway.dev/v1alpha1`) and the field path
+  (`spec.kube.podTemplate` → `affinity`, `tolerations`) are verified
+  against the kgateway 2.5 API reference
+  (https://kgateway.dev/docs/envoy/latest/reference/api/, checked
+  2026-11-17); the installed version may differ, so check the CRD first
+  (`kubectl explain gatewayparameters.spec.kube.podTemplate`).
+  **[unverified]** the proxy-pod label the verify step selects on
+  (`gateway.networking.k8s.io/gateway-name`) — the reference does not
+  name it; the step says so loudly if it matches nothing. If the Gateway already
   references a GatewayParameters (`.spec.infrastructure.parametersRef`,
   or on its GatewayClass), add the affinity to *that* object instead of
   creating a second one.
@@ -422,8 +436,13 @@ kubectl get runaiconfig runai -n runai -o jsonpath='{.spec}' > runai_config_back
 helm get values runai-backend -n runai-backend > runai_control_plane_values.yaml
 POSTGRES_PASSWORD=$(kubectl -n runai-backend get secret "${PG_SECRET:?export PG_SECRET first}" \
   -o jsonpath='{.data.postgres-password}' | base64 -d)
-kubectl -n runai-backend exec "${PG_POD:?export PG_POD first}" -- \
-  env PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "${PG_USER:?export PG_USER first}" "${PG_DB:?export PG_DB first}" > runai_db_backup.sql
+# The password reaches the pod on STDIN (printf builtin), never in argv —
+# `env PGPASSWORD=... pg_dump` on the exec command line would show in `ps`
+# on the head node. [unverified] the PostgreSQL pod has sh + cat (stock
+# postgres images do); if not, open `kubectl exec -it ... -- bash`, export
+# PGPASSWORD there by hand (read -rs), and run pg_dump in that session.
+printf '%s' "$POSTGRES_PASSWORD" | kubectl -n runai-backend exec -i "${PG_POD:?export PG_POD first}" -- \
+  sh -c 'PGPASSWORD="$(cat)" pg_dump -U "$1" "$2"' sh "${PG_USER:?export PG_USER first}" "${PG_DB:?export PG_DB first}" > runai_db_backup.sql
 unset POSTGRES_PASSWORD
 chmod 0600 runai_config_backup.yaml runai_control_plane_values.yaml runai_db_backup.sql
 test -s runai_config_backup.yaml && test -s runai_db_backup.sql && echo "backups OK"

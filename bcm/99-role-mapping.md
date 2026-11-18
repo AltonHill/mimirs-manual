@@ -16,8 +16,7 @@ template defaults from `00-variables.sh`.
 | `gpu-worker-2` | `gpu-worker-2.$DOMAIN` | 10.10.15.54 | `$GPU_WORKER_IPS` |
 | `gpu-worker-3` | `gpu-worker-3.$DOMAIN` | 10.10.15.55 | `$GPU_WORKER_IPS` |
 | `gpu-worker-N` | `gpu-worker-N.$DOMAIN` | 10.10.15.53+ | extend `$GPU_WORKERS`/`$GPU_WORKER_IPS` per site |
-| `dgx-a100-1` | `dgx-a100-1.$DOMAIN` | — (site-assigned) | per-type naming example: `dgx-<model>-N` |
-| `dgx-h200-1` | `dgx-h200-1.$DOMAIN` | — (site-assigned) | per-type naming example: `dgx-<model>-N` |
+| `dgx-<model>-N` | `dgx-<model>-N.$DOMAIN` | — (site-assigned) | per-type naming pattern, e.g. one name series per DGX model |
 | `kgateway` | `kgateway.$DOMAIN` | `$IP_KGATEWAY` (10.10.13.200) | service IP (Usernet) |
 | `runai` | `runai.$DOMAIN` | `$IP_RUNAI` (10.10.13.201) | service IP (Usernet) |
 | `runai-inference` | `runai-inference.$DOMAIN` | `$IP_INFERENCE` (10.10.13.202) | service IP (Usernet) |
@@ -31,7 +30,7 @@ template defaults from `00-variables.sh`.
 To instantiate this template for a real site:
 
 1. Copy the template directory.
-2. Fill `00-variables.sh`: `DOMAIN`, all IPs, node names (keep the
+2. Copy `00-variables.sh` to `site-vars.sh` and fill that in: `DOMAIN`, all IPs, node names (keep the
    role-based scheme or substitute the site's real hostnames —
    either works since every command references the variables).
 3. Replace `example.internal` everywhere if not using `$DOMAIN`

@@ -9,6 +9,18 @@
 >   plus static PVs for pre-existing project and software shares.
 >   This is the client's full design — use it when workloads need
 >   different reclaim policies per data type.
+>
+> **Deciding on site — take 7B if any answer is yes, otherwise 7A:**
+>
+> | Question | Why it forces 7B |
+> |---|---|
+> | Must deleting a PVC **keep** the data for some workloads but **discard** it for scratch? | 7A has one class, one reclaim policy; 7B has `nfs-data`/`nfs-models` (Retain) and `nfs-scratch` (Delete) |
+> | Are there **pre-existing** shares (project data, software trees) that pods must mount as they are? | Only 7B builds static PVs for data that already exists |
+> | Should the NIM/model cache live on its own share (separate quota, sizing or performance)? | 7B's `nfs-models` is that share |
+> | Will the storage team want per-type quotas or snapshot schedules (data vs scratch)? | Needs separate subdirectories/exports — 7B's layout |
+>
+> Record the answers and the choice in 10. Note the consequence for 09:
+> 7A sets a default StorageClass, 7B does not (end of 7B).
 
 ## Design reference (both plans)
 
@@ -219,7 +231,10 @@ kubectl get storageclass
 ```
 
 7B sets no default class: neither this page nor `runbook.py storage
---plan 7b` changes which StorageClass is the default.
+--plan 7b` changes which StorageClass is the default. **Anything that
+relies on a default class needs one** — 09's model-cache PVC does: on
+a 7B site either set a default deliberately (and record it in 10) or
+point 09.2's `storageClass:` at a 7B class (`nfs-models`).
 
 Static PV for pre-existing project data (no provisioning — it already exists):
 

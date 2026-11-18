@@ -10,8 +10,15 @@
 #      site file or calls a cerberus_require_* guard is a fail-closed
 #      subshell `( set -euo pipefail … )`, and no block sources the site
 #      file by a relative path (self-tested)
-#   5. python compile check on render.py (in memory — writes nothing)
-#   6. render smoke test (renders to a temp dir, verifies substitution)
+#   5. dangling-reference lint (scripts/reflint.py, self-tested): every
+#      section / sub-section / file reference lands on something real
+#   5b. customer design brief: .md / .docx / .pdf agree (docs/build-briefs.py
+#      --verify; FAILS without pdftotext — ruled fail-closed, M7 #5)
+#   5c. python compile check on render.py, reflint.py, build-briefs.py (in memory)
+#   6. render smoke test (renders to a temp dir, verifies substitution);
+#      site-file default (no site file -> exit 2; template only when named,
+#      with the NOTE); links resolve inside the deliverable; --force only
+#      replaces a previous render's directory
 #   7. rendered-output scan: no blank interface positions in the rendered
 #      §02 (empty bridge-ports / bond-slaves / bond-primary, nameless
 #      iface / auto) — self-tested, and regression-tested against a site
@@ -186,13 +193,38 @@ sys.exit(1 if hits else 0)
 EOF
 then :; else fail=1; fi
 
-echo "== python compile =="
-if python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' \
-        "$TRACK_DIR/scripts/render.py"; then
-    echo "OK   scripts/render.py"
+echo "== dangling-reference lint (sections, sub-sections, files, ranges) =="
+# Brief M6: every §NN / NN §M / §N.M / Step N reference, file name and
+# section range in the track (and the front door's proxmox-ceph/ lines)
+# must land on a real heading or file. Self-tested inside reflint.py.
+if python3 "$TRACK_DIR/scripts/reflint.py"; then :; else fail=1; fi
+
+echo "== customer design brief: .md / .docx / .pdf agree =="
+# Brief M6: the .md is the master; docs/build-briefs.py regenerates the
+# .docx/.pdf. Every paragraph, list item and table cell of the .md must
+# appear in both derived formats — an .md edited without a rebuild fails
+# here. Needs pdftotext (poppler); without it the stage says NOT RUN
+# loudly and the gate does not claim the formats agree.
+# Ruled 2026-11-17 (M7 #5): FAIL CLOSED without pdftotext — a gate that
+# cannot check the formats does not pass them.
+if command -v pdftotext >/dev/null 2>&1; then
+    if python3 "$TRACK_DIR/docs/build-briefs.py" --verify; then :; else
+        echo "FAIL brief formats disagree — run: python3 docs/build-briefs.py"; fail=1
+    fi
 else
-    echo "FAIL scripts/render.py"; fail=1
+    echo "FAIL pdftotext not installed — the .docx/.pdf agreement cannot be verified, so the gate fails (install poppler-utils)"
+    fail=1
 fi
+
+echo "== python compile =="
+for py in scripts/render.py scripts/reflint.py docs/build-briefs.py; do
+    if python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' \
+            "$TRACK_DIR/$py"; then
+        echo "OK   $py"
+    else
+        echo "FAIL $py"; fail=1
+    fi
+done
 
 # scan_blank_ifaces FILE... — fail on blank interface positions, the
 # signature of a renderer that substituted an empty value (H2).
@@ -220,7 +252,31 @@ EOF
 echo "== render smoke test =="
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-if "$TRACK_DIR/scripts/render.py" --out "$TMP/out" >"$TMP/render.log"; then
+TEMPLATE="$TRACK_DIR/runbook/00-overview/variables.sh"
+# M7 #7: render defaults to <track>/site-vars.sh and never falls back to
+# the template. With no site file in the tree, a bare render must refuse.
+if [ -e "$TRACK_DIR/site-vars.sh" ]; then
+    echo "NOTE site-vars.sh present in the tree — no-site-file refusal test skipped"
+else
+    set +e
+    "$TRACK_DIR/scripts/render.py" --out "$TMP/out-nosite" >"$TMP/nosite.out" 2>"$TMP/nosite.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 2 ] && [ ! -e "$TMP/out-nosite" ] \
+       && grep -q 'REFUSED: no site variables file' "$TMP/nosite.err" \
+       && grep -q 'cp .*variables.sh .*site-vars.sh' "$TMP/nosite.err"; then
+        echo "OK   no site file: render refused (exit 2) with the cp line, nothing written"
+    else
+        echo "FAIL no site file: render did not refuse cleanly (rc=$rc)"; fail=1
+    fi
+fi
+# The template only when named explicitly — and then with the NOTE.
+if "$TRACK_DIR/scripts/render.py" --vars "$TEMPLATE" --out "$TMP/out" >"$TMP/render.log"; then
+    if grep -q '^NOTE: reading the pristine TEMPLATE (named explicitly' "$TMP/render.log"; then
+        echo "OK   template named explicitly: rendered with the publisher's NOTE"
+    else
+        echo "FAIL template render printed no NOTE"; fail=1
+    fi
     # every section must have rendered
     for d in "$TRACK_DIR"/runbook/*/; do
         sec="$(basename "$d")"
@@ -231,6 +287,59 @@ if "$TRACK_DIR/scripts/render.py" --out "$TMP/out" >"$TMP/render.log"; then
         echo "FAIL leftover defined variables in rendered output"; fail=1
     else
         echo "OK   render smoke test"
+    fi
+    # L2: the deliverable stands alone — no relative link may point outside
+    # it, linked diagrams are copied in, library-only files become text.
+    if python3 - "$TMP/out" <<'EOF'
+import os, re, sys
+out = sys.argv[1]
+bad = 0
+for d, _, fs in os.walk(out):
+    for fn in fs:
+        if not fn.endswith(".md"):
+            continue
+        p = os.path.join(d, fn)
+        for m in re.finditer(r"\]\(([^)\s]+)\)", open(p).read()):
+            t = m.group(1).partition("#")[0]
+            if not t or re.match(r"^[a-z][a-z0-9+.-]*:|^/", t):
+                continue
+            if not os.path.exists(os.path.normpath(os.path.join(d, t))):
+                bad += 1
+                print(f"BROKEN-LINK {os.path.relpath(p, out)}: {m.group(1)}")
+sys.exit(1 if bad else 0)
+EOF
+    then
+        if [ -f "$TMP/out/diagrams/cable-diagram.svg" ] \
+           && grep -q 'library file `proxmox-ceph/docs/references.md`' "$TMP/out/runbook/01-cluster-install/README.md"; then
+            echo "OK   rendered links resolve inside the deliverable (diagram copied, library files named)"
+        else
+            echo "FAIL rendered links: diagram not copied or library reference not rewritten"; fail=1
+        fi
+    else
+        echo "FAIL rendered guide has links that point outside the deliverable"; fail=1
+    fi
+    # L16: helper-function locals (val, missing, ...) are not site variables.
+    if python3 -I -B -c 'import sys, importlib.util as u
+s = u.spec_from_file_location("render", sys.argv[1]); r = u.module_from_spec(s); s.loader.exec_module(r)
+v = r.parse_variables(sys.argv[2])
+local = {"val", "missing", "value", "name", "rc", "fp", "here", "tmpl", "dflt", "found", "auth", "v"}
+sys.exit(1 if (local & set(v)) or "CLUSTER_NAME" not in v else 0)' \
+            "$TRACK_DIR/scripts/render.py" "$TEMPLATE"; then
+        echo "OK   parse_variables reads top-level assignments only (no helper locals)"
+    else
+        echo "FAIL parse_variables picked up helper-function locals"; fail=1
+    fi
+    # L2: --force replaces only a directory a previous render wrote.
+    mkdir -p "$TMP/not-a-render" && : > "$TMP/not-a-render/keep.txt"
+    set +e
+    "$TRACK_DIR/scripts/render.py" --vars "$TEMPLATE" --out "$TMP/not-a-render" --force >/dev/null 2>"$TMP/force.err"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ] && [ -f "$TMP/not-a-render/keep.txt" ] \
+       && "$TRACK_DIR/scripts/render.py" --vars "$TEMPLATE" --out "$TMP/out" --force >/dev/null; then
+        echo "OK   --force refuses a foreign directory and replaces a previous render"
+    else
+        echo "FAIL --force guard (rc=$rc)"; fail=1
     fi
 else
     echo "FAIL render.py"; fail=1

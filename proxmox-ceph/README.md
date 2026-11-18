@@ -20,6 +20,11 @@ hardware baseline, and original open questions are preserved in
 
 ## Quickstart
 
+New to the library? The front door's **cold-start path** (`../README.md`,
+part B) walks this track section by section with time estimates; a flat
+IP plan means reading `docs/site-profile-flat.md` before you fill the
+site file.
+
 ```bash
 # 1. Companyify: copy the variables file per site, fill in every value
 cp runbook/00-overview/variables.sh site-vars.sh
@@ -64,8 +69,16 @@ One guarantee across all three: **the rendered guide always gets built.**
 It's a final deliverable — the first and last thing the customer sees.
 
 The template docs are never modified; render writes a fresh directory every
-time. The template stays pristine — the site's truth lives in your
-`site-vars.sh`. Only variables defined in `variables.sh` are substituted,
+time (an existing `--out` is refused; `--force` replaces only a directory a
+previous render wrote). Links inside the rendered guide resolve inside it:
+linked diagrams are copied into its `diagrams/`, and links to library files
+that are not part of the deliverable (`docs/references.md`, a script) become
+plain text naming the library path. The template stays pristine — the
+site's truth lives in your `site-vars.sh`. With no `--vars`, render reads
+`site-vars.sh` at the track root and **refuses (exit 2) if it is missing** —
+it never falls back to the template. The template itself is rendered only
+when named explicitly (`--vars runbook/00-overview/variables.sh`, the
+publisher's check), and the report then opens with a NOTE saying so. Only variables defined in `variables.sh` are substituted,
 and never with an empty string; shell loop variables inside the docs (e.g.
 `${NODE_NUM}`, set per-node at deploy time) and the host-resolved interface
 names (`BF3_P1`, `BF3_P2`, `MGMT_IF`, undefined in the template on purpose)
@@ -100,9 +113,31 @@ The runbook's commands run **on the nodes** (and the PBS host), from a copy
 of this repository. They find the site file through one variable, not
 through the current directory:
 
+**Getting the repo onto the hosts** (once per host, after 01 has given
+each node an OS and its management address; again after any library
+update). From your workstation, at the repo root, with
+`proxmox-ceph/site-vars.sh` filled in. `git archive` ships the committed
+library only — never your untracked files (rendered guides, password
+CSVs, a BCM `site-vars.sh`) — and the Cerberus site file goes as a
+separate, deliberate copy:
+
 ```bash
-# Once per host (each node, and the PBS host): put the repo copy where the
-# site keeps it — /root/mimirs-manual is the convention — then:
+HOSTS="${HOSTS:?set HOSTS to the nodes and the PBS host, space-separated mgmt addresses}"
+for h in $HOSTS; do
+  git archive --format=tar HEAD | ssh "root@$h" 'mkdir -p /root/mimirs-manual && tar -x -C /root/mimirs-manual'
+  scp proxmox-ceph/site-vars.sh "root@$h:/root/mimirs-manual/proxmox-ceph/site-vars.sh"
+  ssh "root@$h" 'chmod 0600 /root/mimirs-manual/proxmox-ceph/site-vars.sh'
+done
+```
+
+(Before §01 there is no OS to copy to; 00a phase A is console and XCC
+work and needs no repo on the node.)
+
+Then, on each host:
+
+```bash
+# Once per host (each node, and the PBS host): the repo copy is at
+# /root/mimirs-manual (the convention used above) — then:
 grep -qs '^export CERBERUS_TRACK=' /root/.bashrc \
   || echo 'export CERBERUS_TRACK=/root/mimirs-manual/proxmox-ceph' >> /root/.bashrc
 export CERBERUS_TRACK=/root/mimirs-manual/proxmox-ceph
@@ -154,10 +189,14 @@ things on purpose.
 
 - `docs/runbook-starting-point.md` — design decisions, hardware baseline, open questions, section outline
 - `docs/site-profile-flat.md` — how the template instantiates on a flat IP plan (one mgmt /24, per-role data /24s): Ceph addressing variant, PBS host rule, Netris bootstrap, phased bring-up
-- `docs/customer-design-brief.md` (+ `.docx`, `.pdf`) — customer-facing design brief: architecture, specs, protection story
+- `docs/customer-design-brief.md` (+ `.docx`, `.pdf`) — customer-facing design brief: architecture, specs, protection story.
+  The `.md` is the master: after any edit to it (or to the diagrams) run
+  `python3 docs/build-briefs.py` — it re-renders the diagram PNGs, rebuilds the
+  `.docx` (stdlib only) and the `.pdf` (LibreOffice headless, neutral metadata),
+  and verifies all three formats agree; `scripts/check.sh` re-checks the agreement
 - `docs/customer-protection-brief.md` — one-page "you are protected" high points
 - `docs/references.md` — curated official documentation links per runbook section
-- `docs/diagrams/` — architecture.svg/png and cable-diagram.svg/png (generated programmatically)
+- `docs/diagrams/` — architecture.svg/png and cable-diagram.svg/png (the SVG is the source; `docs/build-briefs.py` renders the PNGs)
 - `runbook/` — the full step-by-step (one directory per section)
 - `scripts/` — idempotent, guarded automation (preflight checks, `--dry-run`, confirmations);
   `render.py` builds the site-specific Markdown guide, `check.sh` is the validation gate

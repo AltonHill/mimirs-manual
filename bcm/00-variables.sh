@@ -1,10 +1,15 @@
 #!/bin/bash
 # =====================================================================
-# 00-variables.sh — Site-specific values for the B300 runbook template
+# 00-variables.sh — the pristine TEMPLATE of site values (B300 runbook)
 # ---------------------------------------------------------------------
-# This is the ONLY file you customize per deployment. Every command in
-# sections 01-11 references these variables. Fill it in, `source` it,
-# and the rest of the runbook runs top to bottom.
+# Never edit this tracked file in place. Copy it to the site file beside
+# it and fill THAT in (bcm/site-vars.sh is gitignored, so site values
+# never reach a clone's push remote):
+#     cp 00-variables.sh site-vars.sh && nvim site-vars.sh
+#     source site-vars.sh
+# Every command in sections 01 → 16 references these variables, and every
+# runbook.py pass reads site-vars.sh (or --vars FILE). The passes refuse
+# this template; its shipped defaults describe the lab build.
 #
 # "Companyify" step: replacing these values (and DOMAIN) with the real
 # site's values is the entire site-customization process.
@@ -16,7 +21,7 @@ export CLUSTER_NAME="bcm-cluster"         # BCM cluster name
 export CLIENT_ORG="Wayland Megacorp"      # Organization (docs/license)
 
 # --- Networks (CIDR + gateway). Segmented layout is the default;
-#     the lab validated on a flat 10.10.13.0/24 layout instead. ---
+#     a flat single-/24 layout also works (see 01). ---
 export NET_PROVISION="10.10.15.0/24"      # BCM internalnet (provisioning)
 export GW_PROVISION="10.10.15.1"
 export NET_STORAGE="10.10.12.0/24"        # Storagenet (Pure NFS)
@@ -24,6 +29,14 @@ export NET_USER="10.10.13.0/24"           # Usernet (services, user access)
 export GW_USER="10.10.13.1"
 export NET_OOB="10.10.16.0/24"            # OOB / hardware management
 export GW_OOB="10.10.16.1"
+# The site DHCP pool on the provisioning network, "FIRST-LAST" (01 "DHCP").
+# Every static address in 01 must sit outside it. Empty = not decided yet
+# (01's sign-off needs it). No default on purpose: at fleet scale the
+# statics run well past any guessed range.
+export DHCP_POOL=""
+# BCM HA only (13): the external virtual IP that reaches the ACTIVE head
+# node. Empty = the site does not run BCM HA.
+export BCM_HA_VIP=""
 export NET_DNS1="10.10.11.53"
 export NET_DNS2="10.10.11.54"
 export DNS_IP="$NET_DNS1"                  # DNS server under test (14); override per site
@@ -63,15 +76,23 @@ export K8S_CTRL_IPS="10.10.15.50 10.10.15.51 10.10.15.52"
 # (A100, H100/H200, B200/B300) — one category+image per node TYPE.
 # HGX 8-GPU OEM nodes (Dell, HPE, Lenovo) and Cisco UCS GPU nodes follow
 # the exact same pattern: add a category+image per type (see 03).
-# NVL72 rack-scale systems (Vera Rubin platform) are shipping as of
-# Sept 2026 — same per-type pattern for provisioning, but the rack
-# fabric and liquid cooling are their own design.
+# Vera Rubin NVL72 rack-scale systems (NVIDIA's current name; the rack
+# was first announced as "NVL144") — NVIDIA: "Production shipments of
+# Vera Rubin are set to begin starting this fall" (2026-05-31 release).
+# Same per-type pattern for provisioning, but the rack fabric and liquid
+# cooling are their own design.
 # Mixed GPU node types in one cluster: one category+image per type.
 export GPU_WORKERS="gpu-worker-1 gpu-worker-2 gpu-worker-3"
 export GPU_WORKER_IPS="10.10.15.53 10.10.15.54 10.10.15.55"
 export GPU_NODE_TYPE="dgx-b300"            # e.g. dgx-b300, dgx-h200, hgx-dell, ucs
-export IMG_GPU="runai-dgx-image"           # per-type images: runai-<type>-image
-export CAT_GPU="runai-dgx-cat"             # per-type categories: runai-<type>-cat
+# Naming (03.1/03.2): images are per FAMILY — every DGX model shares
+# runai-dgx-image (cloned from dgx-image); HGX/UCS families get their own
+# (runai-hgx-dell-image, runai-ucs-image). Categories are per HOST TYPE,
+# because each carries its type's by-path disk layout (03.4): one DGX
+# type keeps runai-dgx-cat; a second DGX model adds runai-<type>-cat
+# (e.g. runai-dgx-h200-cat) on the same runai-dgx-image.
+export IMG_GPU="runai-dgx-image"           # per family: runai-<family>-image
+export CAT_GPU="runai-dgx-cat"             # per host type once there is more than one
 
 # --- Service IPs (Usernet; MetalLB / gateway addresses) ---
 export IP_KGATEWAY="10.10.13.200"          # Kubernetes gateway (Kgateway)
@@ -98,13 +119,15 @@ export NFS_MOUNT="/mnt/data"
 # Credential class (H6): every name containing PASSWORD, API_KEY, TOKEN,
 # SECRET, PRODUCT_KEY or LICENSE_KEY. Policy: credentials never appear in
 # a deliverable, placeholder or real.
-#   - Leave the placeholders below in this file. Supply the real values
+#   - Leave the placeholders below in the site file too. Supply the real values
 #     in your shell at run time:  read -rs BMC_PASSWORD; export BMC_PASSWORD
 #     (the `${NAME:-<...>}` form keeps a value you exported before
 #     sourcing this file).
 #   - `runbook.py render` never substitutes these names — the rendered
-#     guide keeps `$BMC_PASSWORD` — and warns loudly if one holds a real
-#     value while it builds a deliverable.
+#     guide keeps `$BMC_PASSWORD`. A real value in the variables FILE
+#     (even as a ${NAME:-value} default) makes render REFUSE (exit 3,
+#     nothing written); one held only in your shell is warned about by
+#     name and the render continues.
 #   - Commands that consume one are written
 #     `bcm_require_secret NAME && <command>`, so a placeholder can never
 #     be sent to a real tool (see the helper at the end of this file).
@@ -116,7 +139,7 @@ export RUNAI_ADMIN_USER="admin@${DOMAIN}"
 export RUNAI_ADMIN_PASSWORD="${RUNAI_ADMIN_PASSWORD:-<RUNAI-ADMIN-PASSWORD>}"
 export PG_PASSWORD="${PG_PASSWORD:-<POSTGRES-PASSWORD>}"
 
-# --- Versions (known-working baseline; see 12-baseline.md) ---
+# --- Versions (known-working baseline; the reference list is the 08.3 field note) ---
 export BCM_VERSION="11"
 export K8S_VERSION="1.34"
 export RUNAI_VERSION="2.26.x"

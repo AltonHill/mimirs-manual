@@ -16,7 +16,13 @@
   **both** head-node MACs. Use a LOM-port MAC on a non-removable NIC
   (BMC MACs do not work).
 - External Virtual IP from the site survey — this VIP is how you reach
-  the *active* head node after HA is up.
+  the *active* head node after HA is up. Record it as `BCM_HA_VIP` in
+  `site-vars.sh` (it ships empty: empty means no HA).
+
+`cmha-setup` and `/cm/cm-clone-install` are interactive menus. In the
+blocks below only the uncommented lines are commands; the `# ->` lines
+are the screens you step through, in order — read them, don't paste
+them.
 - `cmha-setup` can also place `/cm/shared` and `/home` on external
   shared storage (NAS/DAS/DRBD) — decide before starting.
 
@@ -34,7 +40,7 @@ for c in $CAT_CP $CAT_WRK $CAT_GPU; do cmsh -c "device ; power -c $c off"; done
 cmha-setup
 # -> Setup -> Configure
 # -> verify license info / MACs -> CONTINUE
-# -> enter the external VIP -> NEXT
+# -> enter the external VIP ($BCM_HA_VIP) -> NEXT
 # -> enter the secondary head-node name -> NEXT
 # -> failover network: configure dedicated interfaces,
 #    or skip to reuse internalnet
@@ -69,5 +75,5 @@ cmsh -c "device list -f"
 # both head nodes show [ UP ]
 ```
 
-- [ ] VIP reaches the active head node
+- [ ] `$BCM_HA_VIP` reaches the active head node (`ping -c 3 "$BCM_HA_VIP"`; Base View on `https://$BCM_HA_VIP:8081/base-view/`)
 - [ ] Failover tested (planned failover, not just config)

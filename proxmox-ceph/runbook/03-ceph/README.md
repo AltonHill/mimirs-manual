@@ -10,9 +10,11 @@ Deploy Ceph Tentacle on the three hyperconverged nodes: install, initialize, MON
 > deployed — nothing in the workload requires shared file storage, and the MDS
 > tier would add RAM/CPU cost and operational surface for no benefit. If a
 > future site needs CephFS, that is a design change with its own section — and
-> that section is where an orphaned-subvolume cleanup audit belongs (see the
-> August 2026 cautionary runbook: ~16 stranded staging subvolumes, ~76 GiB,
-> undercounted from a single cluster's PVs).
+> that section is where an orphaned-subvolume cleanup audit belongs. Field
+> lesson from another CephFS deployment (its write-up is not part of this
+> library, so no figures are quoted here): CSI staging subvolumes can be
+> stranded and go unnoticed when they are counted from a single cluster's
+> PVs — audit from the Ceph side.
 
 **Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**. Names this section consumes: `CEPH_PUBLIC_NET` (template `10.20.20.0/24`), `CEPH_CLUSTER_NET` (template `10.20.30.0/24`), and the per-node OSD drives `NODE<n>_OSD1_BYID` / `NODE<n>_OSD2_BYID` (recorded in 00a §4). Each block sources the site file itself, through `CERBERUS_TRACK` (track README, "Working-directory contract"), as one fail-closed `( set -euo pipefail … )` unit.
 
@@ -23,7 +25,7 @@ All `pveceph` steps below run as `root`. Steps marked "each node" must be execut
 ## Prerequisites
 
 - §01 cluster join and §02 network are complete: the Ceph public and cluster networks are up on every node, MTU 9000 verified end-to-end.
-- **Corosync link1 is in place (01 §7 — REQUIRED).** This gate refuses to continue without it:
+- **Corosync link1 is in place (01 §7 — REQUIRED).** This gate refuses to continue without it. The `corosync-cfgtool -s` wording it greps (`LINK ID 1`) is **[unverified]** on this release — read the real output at the first cluster and adjust the greps if needed (library verification checklist):
 
 ```bash
 ( set -euo pipefail
@@ -47,7 +49,7 @@ All `pveceph` steps below run as `root`. Steps marked "each node" must be execut
 pveceph install --version tentacle --repository no-subscription
 ```
 
-- `tentacle` is explicit on purpose: **Squid is EOL — never pin Squid on a greenfield build.** (Verify at deploy time on the [Ceph active-releases table](https://docs.ceph.com/en/latest/releases/).)
+- `tentacle` is explicit on purpose: **Squid reaches its estimated end of life on 2026-12-02 (checked 2026-11-17) — never pin Squid on a greenfield build.** (Verify at deploy time on the [Ceph active-releases table](https://docs.ceph.com/en/latest/releases/).)
 - `--repository no-subscription` pulls from the public `download.proxmox.com` Ceph repo. For licensed builds use `--repository enterprise` (requires a Proxmox VE Ceph subscription key). Do not use `test` for production.
 - Verify on each node afterwards: `ceph --version` — expect `20.2.x` Tentacle on all three. All nodes must run the same major release.
 

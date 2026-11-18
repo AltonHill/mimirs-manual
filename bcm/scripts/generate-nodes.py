@@ -35,7 +35,8 @@ Usage:
     # stops unless each carries a by-path layout (RUNBOOK=<path> if the
     # repo moved). Override (D3, logged): --allow-non-by-path --reason "..."
 
-The skeleton follows the variables file (--vars, default ../00-variables.sh)
+The skeleton follows the site variables file (--vars, default ../site-vars.sh —
+a copy of the 00-variables.sh template; the template itself is refused)
 and section 01:
   - hostnames take the $K8S_CTRL / $GPU_WORKERS form (gpu-worker-1, ...);
   - control plane starts at the first $K8S_CTRL_IPS address (.50), GPU
@@ -45,8 +46,11 @@ and section 01:
   - every address is bounds-checked: a range that collides with another,
     hits the gateway/head node, or runs past its subnet fails loudly — no
     row is written.
-Skeleton MACs use the pattern 00:50:56:b3:xx:xx. --check (and generation)
-REFUSES any row still carrying it: an unfilled skeleton never validates.
+Skeleton MACs are RFC 7042 documentation addresses, 00:00:5e:00:53:01 to
+00:00:5e:00:53:ff (so at most 255 rows per skeleton). --check (and
+generation) REFUSES any row still carrying one, and also the pre-M6
+skeleton pattern 00:50:56:b3:xx:xx (a VMware OUI that older skeletons
+used): an unfilled skeleton never validates, whichever generation made it.
 
 Validation performed: required fields present, no duplicate hostname /
 IP / MAC, IP parses as IPv4, MAC looks like a MAC and is not a skeleton
@@ -73,7 +77,16 @@ from runbook import load_vars, override_requested  # noqa: E402  (one parser for
 COLUMNS = ["hostname", "ip", "mac", "role", "category", "interface", "bmc_ip"]
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 ROLES = {"ctrl", "worker", "gpu"}
-SKELETON_MAC_PREFIX = "00:50:56:b3:"
+# RFC 7042 sec. 2.1.2: 00-00-5E-00-53-00..FF is reserved for documentation —
+# it can never belong to a real NIC.
+SKELETON_MAC_PREFIX = "00:00:5e:00:53:"
+SKELETON_MAC_MAX = 255
+# Refused as well: the pattern skeletons used before M6 (a VMware OUI).
+LEGACY_SKELETON_MAC_PREFIXES = ("00:50:56:b3:",)
+SKELETON_MAC_PREFIXES = (SKELETON_MAC_PREFIX,) + LEGACY_SKELETON_MAC_PREFIXES
+TRACK_DIR = os.path.dirname(HERE)
+TEMPLATE_VARS = os.path.join(TRACK_DIR, "00-variables.sh")
+SITE_VARS = os.path.join(TRACK_DIR, "site-vars.sh")
 BMC_OFFSET = 100
 
 
@@ -120,7 +133,7 @@ def check(rows):
         seen_mac.add(mac)
         if not MAC_RE.match(mac):
             errors.append(f"{tag}: malformed MAC '{mac}' (want 00:11:22:33:44:55)")
-        elif mac.startswith(SKELETON_MAC_PREFIX):
+        elif mac.startswith(SKELETON_MAC_PREFIXES):
             skeleton_lines.append(i)
         if role not in ROLES:
             errors.append(f"{tag}: role must be one of {sorted(ROLES)}, got '{role}'")
@@ -136,7 +149,8 @@ def check(rows):
         shown = ", ".join(str(n) for n in skeleton_lines[:8])
         more = f" (+{len(skeleton_lines) - 8} more)" if len(skeleton_lines) > 8 else ""
         errors.insert(0, f"SKELETON: {len(skeleton_lines)} row(s) still carry the "
-                         f"--skeleton placeholder MAC pattern {SKELETON_MAC_PREFIX}xx:xx "
+                         f"--skeleton placeholder MAC pattern "
+                         f"({SKELETON_MAC_PREFIX}xx, or the pre-M6 00:50:56:b3:xx:xx) "
                          f"(lines {shown}{more}) — this is an unfilled skeleton; "
                          f"replace every MAC (and IP/BMC IP) with the node's real values")
     return errors
@@ -149,7 +163,7 @@ def gate_lines(categories, gate_reason=None, devices=(), vars_path=None):
     can't be found (set RUNBOOK to its path). --vars locates
     disk-layouts/OVERRIDES.log for an override's durable record."""
     runbook = os.path.join(HERE, "runbook.py")
-    vars_path = os.path.abspath(vars_path or os.path.join(HERE, "..", "00-variables.sh"))
+    vars_path = os.path.abspath(vars_path or SITE_VARS)
     cats = " ".join(f"--category {shlex.quote(c)}" for c in categories)
     cats += "".join(f" --device {shlex.quote(d)}" for d in devices)
     override = ""
@@ -282,10 +296,16 @@ def skeleton(ctrl, workers, gpus, vars_):
     rows = []
     mac_n = 0
 
+    total = ctrl + gpus + workers
+    if total > SKELETON_MAC_MAX:
+        errors.append(f"{total} rows need {total} skeleton MACs, but the RFC 7042 "
+                      f"documentation range holds {SKELETON_MAC_MAX} "
+                      f"({SKELETON_MAC_PREFIX}01-ff) — generate the skeleton in parts")
+
     def mac():
         nonlocal mac_n
         mac_n += 1
-        return SKELETON_MAC_PREFIX + "%02x:%02x" % ((mac_n >> 8) & 0xFF, mac_n & 0xFF)
+        return SKELETON_MAC_PREFIX + "%02x" % (mac_n & 0xFF)
 
     for i in range(ctrl):
         h = f"{cform}{i + 1:0{cpad}d}" if cpad else f"{cform}{i + 1}"
@@ -310,7 +330,7 @@ def skeleton(ctrl, workers, gpus, vars_):
     w.writerow(COLUMNS)
     w.writerows(rows)
     print(f"# skeleton: {ctrl} ctrl + {gpus} gpus + {workers} workers — "
-          f"REPLACE every placeholder MAC ({SKELETON_MAC_PREFIX}xx:xx) and check every "
+          f"REPLACE every placeholder MAC ({SKELETON_MAC_PREFIX}xx) and check every "
           f"IP; --check refuses the skeleton until you do", file=sys.stderr)
 
 
@@ -319,8 +339,9 @@ def main():
     ap.add_argument("csv", nargs="?", help="inventory CSV file")
     ap.add_argument("--check", action="store_true", help="validate only")
     ap.add_argument("--skeleton", action="store_true", help="emit fill-in CSV")
-    ap.add_argument("--vars", default=os.path.join(HERE, "..", "00-variables.sh"),
-                    help="variables file the skeleton follows (default: ../00-variables.sh)")
+    ap.add_argument("--vars", default=None,
+                    help="site variables file (default: ../site-vars.sh; the "
+                         "00-variables.sh template itself is refused)")
     ap.add_argument("--ctrl", type=int, default=3)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--gpus", type=int, default=0)
@@ -333,9 +354,18 @@ def main():
     gate_reason = override_requested(a)
 
     if a.skeleton:
-        if not os.path.exists(a.vars):
-            fail(f"variables file not found: {a.vars}")
-        skeleton(a.ctrl, a.workers, a.gpus, load_vars(a.vars))
+        vars_path = a.vars or SITE_VARS
+        if not os.path.isfile(vars_path):
+            print(f"REFUSED: site variables file not found: {vars_path}\n"
+                  f"         cp {TEMPLATE_VARS} {SITE_VARS}   # then fill it in, "
+                  f"or pass --vars FILE", file=sys.stderr)
+            sys.exit(2)
+        if os.path.samefile(vars_path, TEMPLATE_VARS):
+            print(f"REFUSED: {vars_path} is the pristine template — the skeleton "
+                  f"would follow the lab defaults. Copy it to {SITE_VARS}, fill it "
+                  f"in, and pass that.", file=sys.stderr)
+            sys.exit(2)
+        skeleton(a.ctrl, a.workers, a.gpus, load_vars(vars_path))
         return
     if not a.csv:
         ap.error("provide a CSV file (or --skeleton)")

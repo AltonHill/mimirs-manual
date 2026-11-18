@@ -28,7 +28,7 @@ Curated official links only. One line per link: what it covers + which runbook s
 - https://pubs.lenovo.com/xcc2/updating_firmware_overview — XCC2 firmware update overview (XCC-first-then-UEFI ordering rule) — used by § firmware via XCC web.
 - https://pubs.lenovo.com/xcc2/updating_firmware_procedure — XCC2 system/adapter/PSU firmware update steps — used by § firmware via XCC web.
 - https://pubs.lenovo.com/xcc2/updating_firmware_repository — XCC2 Update from Repository (bundles; Platinum-license note) — used by § firmware via XCC web.
-- StorCLI reference (MegaRAID 940-8i): no public official URL located (Broadcom docs behind support login) — use `storcli /c0 help` / on-box help; CLI property set (`set jbod=on`) matches the StorCLI codebase documented in Dell's PERC CLI reference. Marked unverified in research-findings.
+- StorCLI reference (MegaRAID 940-8i): no public official URL located (Broadcom docs behind support login) — use `storcli /c0 help` / on-box help; CLI property set (`set jbod=on`) matches the StorCLI codebase documented in Dell's PERC CLI reference. **[unverified]** — no public Broadcom source; confirm on-box ([library verification checklist](../../docs/verification-checklist.md)).
 - Samsung PM1743: no official enterprise.samsung.com datasheet URL obtainable via search — reference the vendor BOM/part data sheet shipped with the hardware instead.
 
 ## Network (NVIDIA)

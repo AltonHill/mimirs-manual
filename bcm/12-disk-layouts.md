@@ -121,6 +121,9 @@ to one node (03.4 step 5) or the category (03.4 step 7):
 ```bash
 scripts/runbook.py disklayouts --type "$GPU_NODE_TYPE" --category "$CAT_GPU" --dry-run
 # the pass runs: cmsh -c "category ; use $CAT_GPU ; set disksetup /abs/path/disk-layouts/$GPU_NODE_TYPE-by-path.xml ; commit"
+# [unverified] that `set disksetup` accepts a file path as its value (it may
+# expect the XML content) — first-contact check: `get disksetup` afterwards
+# must print the XML, not the path (verification checklist)
 ```
 
 > **Field note:** the stock BCM templates use kernel paths. The

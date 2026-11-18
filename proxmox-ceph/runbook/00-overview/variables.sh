@@ -41,7 +41,7 @@ set -u
 
 # ------------------------------------------------------------------ cluster
 CLUSTER_NAME="${CLUSTER_NAME:-cerberus}"
-CEPH_RELEASE="${CEPH_RELEASE:-tentacle}"   # PVE 9.2 default. Do NOT use Squid (EOL ~Sept/Oct 2026 — re-check docs.ceph.com at deploy time).
+CEPH_RELEASE="${CEPH_RELEASE:-tentacle}"   # PVE 9.2 default for new installs. Do NOT use Squid (estimated EOL 2026-12-02 per docs.ceph.com/en/latest/releases/, checked 2026-11-17 — re-check at deploy time).
 DOMAIN="${DOMAIN:-PLACEHOLDER}"            # e.g. lab.example.com — used for FQDNs in /etc/hosts
 
 # ------------------------------------------------------------------ nodes
@@ -114,7 +114,7 @@ NODE4_OSD2_BYID="${NODE4_OSD2_BYID:-PLACEHOLDER}"   # optional
 
 # ------------------------------------------------------- fabric switches
 # Two NVIDIA SN5610 800GbE (Cumulus 5.x) carry the Proxmox storage fabric.
-# A third SN5610 exists as SPARE (AI side) — out of scope for this runbook.
+# InfiniBand belongs to the GPU side — out of scope for this runbook.
 FABRIC_SWITCH_A="${FABRIC_SWITCH_A:-sn5610-a}"
 FABRIC_SWITCH_B="${FABRIC_SWITCH_B:-sn5610-b}"
 FABRIC_MTU="${FABRIC_MTU:-9216}"   # Cumulus default; verify, never set below 9000
@@ -156,6 +156,7 @@ MAILTO="${MAILTO:-ops@example.com}"           # PLACEHOLDER — backup/alert mai
 #                  the repository string, backup-drill.sh.
 PBS_HOST_IP="${PBS_HOST_IP:-10.10.10.100}"    # PLACEHOLDER — PBS admin (mgmt) address
 PBS_DATASTORE="${PBS_DATASTORE:-ceph-backups}"
+PBS_DATASTORE_PATH="${PBS_DATASTORE_PATH:-/mnt/backup-cerberus}"   # on the PBS host: the datastore's filesystem path (06.3)
 PBS_STORAGE_ID="${PBS_STORAGE_ID:-pbs-cerberus}"   # PVE storage ID for the PBS target (06.6)
 # PBS user + API token. The auth-id is "$PBS_BACKUP_USER!$PBS_AUTH_NAME";
 # build it with cerberus_pbs_auth_id (below), never by hand in a double-

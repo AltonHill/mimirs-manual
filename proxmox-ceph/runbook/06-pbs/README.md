@@ -126,8 +126,8 @@ Retention here uses **`--keep-*` flags** — these are correct on the PBS side.
 ```bash
 ( set -euo pipefail
   source "${CERBERUS_TRACK:?export CERBERUS_TRACK=/path/to/proxmox-ceph first (track README)}/site-vars.sh"
-  cerberus_require_vars PBS_DATASTORE
-  proxmox-backup-manager datastore create "$PBS_DATASTORE" /mnt/backup-cerberus \
+  cerberus_require_vars PBS_DATASTORE PBS_DATASTORE_PATH
+  proxmox-backup-manager datastore create "$PBS_DATASTORE" "$PBS_DATASTORE_PATH" \
     --comment "Cerberus cluster backup datastore" \
     --keep-daily 7 --keep-weekly 4 --keep-monthly 6 \
     --gc-schedule daily \
