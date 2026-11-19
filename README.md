@@ -11,8 +11,8 @@
 Kubernetes 1.34, Run:ai 2.26.x — the 08.3 field note lists the stack) ·
 Proxmox-Ceph track (Cerberus): PVE 9.2.x, Ceph Tentacle 20.2.x, PBS 4.2;
 customer design brief Version 1.1 · DGX Vitals **2.0** (`VERSION = "2.0"`
-in both tools), byte-identical to the canonical `dgx-vitals` repo at
-commit `01fb620`. Vendor claims the library could not check are listed,
+in both tools) — the tool lives in this library now; its former
+standalone repo is archived, frozen at commit `01fb620`. Vendor claims the library could not check are listed,
 with their status, in
 [`docs/verification-checklist.md`](docs/verification-checklist.md).
 
@@ -67,11 +67,12 @@ files the evidence: full log, health card, tracker-ready summary. The
 tracks stand the machines up; Vitals proves they're healthy. **BCM 08.6
 runs it, and the 11.3 handoff gates on its verdicts.**
 
-**Provenance.** The tool's source of truth is its own repo (`dgx-vitals`).
-The copy here is an assembly of it: byte-identical to canonical commit
-`01fb620` (VERSION 2.0), leaving out only the canonical repo's `tests/`
-and `.gitattributes`. `dgx-vitals/README.md` is the tool's own README and
-says nothing about this library — this paragraph is the provenance
+**Provenance.** This library is the tool's source of truth. dgx-vitals
+was folded in whole — code, tests, and docs — from its standalone repo,
+whose final commit (`01fb620`, VERSION 2.0) stays archived and public
+for reference; everything since, including the 2026-11-19 issue fix
+pass, exists only here. `dgx-vitals/README.md` is the tool's own README
+and says nothing about this library — this paragraph is the provenance
 record. Start with the tool's two entry points:
 [`dgx-vitals/QUICKSTART.md`](dgx-vitals/QUICKSTART.md) (first run) and
 [`dgx-vitals/docs/OPERATORS-GUIDE.md`](dgx-vitals/docs/OPERATORS-GUIDE.md)
@@ -335,7 +336,7 @@ mimirs-manual/
                        # render.py, check.sh, reflint.py
     docs/              # design briefs (+ build-briefs.py), site profile,
                        # references, diagrams, the planning record
-  dgx-vitals/          # companion validation tool (mimirs-test), assembled from canonical
+  dgx-vitals/          # companion validation tool (mimirs-test) — lives here; standalone archived
     QUICKSTART.md      # first run
     README.md          # the tool's own README
     dgx-vitals.py      # the runner — DGX/HGX profiles, NCCL suite
@@ -363,7 +364,7 @@ does not round them to one number.
   `check.sh` also needs `pdftotext` (poppler-utils). Rebuilding the
   design brief (`proxmox-ceph/docs/build-briefs.py`) needs
   `rsvg-convert`, LibreOffice (`soffice`) and `qpdf`.
-- **DGX Vitals:** Python **3.10+** — the floor its own repo states, in
+- **DGX Vitals:** Python **3.10+** — the tool's stated floor, in
   its README, QUICKSTART, Operators Guide and both tools' headers. Stdlib
   only; runs on the node itself or from a jump host over SSH
   (`hosts.csv`); the NCCL step needs the `nccl-tests` binaries on the
