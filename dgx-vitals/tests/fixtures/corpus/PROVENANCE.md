@@ -35,3 +35,13 @@ number of prefix substitutions made.
 | `bundle-w09/fx-w09-prod-hv-01/cdw-validation-fx-w09-prod-hv-01-20261111-174304/03-nvsm-versions.log` | `moonlite-validation-bundle.tar.gz → bundles/cdw-validation-nesd-oma01c-w09-prod-hv-01-20261111-174304.tar.gz → 03-nvsm-versions.log` | `b9764b03ce16b2d81b8020618b77c222cc4a5db555feb4c5def6c8dcef080ede` | 0 |
 | `bundle-w09/fx-w09-prod-hv-01/cdw-validation-fx-w09-prod-hv-01-20261111-174304/04-nvsm-health.log` | `moonlite-validation-bundle.tar.gz → bundles/cdw-validation-nesd-oma01c-w09-prod-hv-01-20261111-174304.tar.gz → 04-nvsm-health.log` | `a62a8620adc336228f1a90a6875800835479f0bc7470ca4b31d38adb876e5fec` | 0 |
 | `bundle-w09/fx-w09-prod-hv-01/cdw-validation-fx-w09-prod-hv-01-20261111-174304/system-info.txt` | `moonlite-validation-bundle.tar.gz → bundles/cdw-validation-nesd-oma01c-w09-prod-hv-01-20261111-174304.tar.gz → system-info.txt` | `65cc921d50d5ade6c5962273a5fe95b040eaf3ff241ebb2a6b8b6010781910b2` | 2 |
+
+## Sanitization (2026-11-19)
+
+Before the corpus was committed, device-unique identifiers were
+replaced with synthetic values of identical format, consistently
+across every file (FULLLOGs, summary.csv rows, and the bundle
+logs alike): GPU serial numbers, DGX/NVMe serial values, GPU
+UUIDs, GPU fabric GUIDs, and any NGUID/EUI/WWID identifiers. The sha256 column above
+remains the hash of the pre-substitution source, as with the
+hostname-prefix substitution. No other content was changed.

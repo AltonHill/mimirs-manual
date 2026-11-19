@@ -387,7 +387,7 @@ ifreload -a
 ```
 
 PASS: every line `PASS`, 0% loss on every pair and every VLAN. Then, from
-one node, run `bash "$CERBERUS_TRACK/scripts/net-verify.sh"` — it adds the
+one node, run `bash "$CERBERUS_TRACK/scripts/net-verify.sh" --allow-remote-probes` — it adds the
 corosync UDP probe on both link networks and the MTU check to the PBS host's
 VLAN address (once the PBS host is on the VLAN, 06.1).
 

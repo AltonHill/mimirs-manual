@@ -3,9 +3,10 @@
 The library's own record, newest first. Each track keeps its older history
 too (`bcm/CHANGELOG.md`); this file starts with the review-and-repair
 program that took the library from "reads well" to "runs as written".
-The library version stays `1.0.0` until the program closes.
+The library version stayed `1.0.0` until the program closed on
+2026-11-18; it is now `1.1.0`.
 
-## The M-program — review and repair (r13 → M7), 2026-11-16 to 2026-11-17
+## The M-program — review and repair (r13 → M8), 2026-11-16 to 2026-11-18
 
 A read-only review of r12 found 2 critical, 11 high and 27 medium problems:
 places where an operator following the text exactly would get hurt,
@@ -70,7 +71,7 @@ a ruling; this entry is what changed, in operator terms.
   isolation drill; every state-changing block pastes as one fail-closed
   unit.
 
-### M7 — cold start (this release)
+### M7 — cold start
 
 - **Was wrong:** no single path through the library — four quickstarts,
   section orders left to inference, no time estimates, jargon undefined,
@@ -162,3 +163,26 @@ a ruling; this entry is what changed, in operator terms.
   - **Skeleton inventories** use RFC 7042 documentation MACs; the older
     skeleton pattern is still refused.
   - **Front door:** each track renders to its own directory, with `--vars`.
+
+### M8 — rulings
+
+- **Changed:** a cross-track gate stage that fails closed on unparsed
+  values; front-door and docs lint; the `DHCP_POOL` 01 sign-off;
+  `HELM_VERSION` and `RUNAI_UTILS_COMMIT` promoted to the variables
+  file; the Cerberus Python 3.8 floor proven. Both gates green.
+  (This entry was deferred from r20 by ruling R6 and lands with the
+  program close, as ruled.)
+
+### Program close — one library
+
+- **Consolidation:** the library is a single repo now. mimirs-veil is
+  folded in whole as the `veil/` component; the dgx-vitals companion's
+  tests and stubs joined its copies in-tree; mimirs-hound — a frozen
+  ancestor of the proxmox-ceph track with no unique files — is
+  retired. Each component still runs on its own from a sparse
+  checkout (see README, "Just want one piece?").
+- **History rewrite:** the pre-r16 disk-layout pages carried real
+  field PCI addresses in six places. The full history was rewritten
+  using the r15 +0x10 convention, so the past now matches the
+  published tree; the current tree did not change by a single byte
+  (tree hash verified identical before and after).

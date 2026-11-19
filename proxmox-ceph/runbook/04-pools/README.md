@@ -4,7 +4,7 @@ Create the VM-storage RBD pool (the pool VMs and LXC volumes live on), with repl
 
 **Design targets:** `vm-storage`, size=3 / min_size=2, PG autoscale **on** (the default is `warn` — always override it), RBD application, registered as Proxmox storage, quota = the single-OSD-failure ceiling (~3.3 TB on the reference build).
 
-**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**. This section consumes `POOL_VM_NAME` (template `vm-storage`), `CEPH_POOL_SIZE` / `CEPH_POOL_MIN_SIZE` (3 / 2), `POOL_VM_TARGET_SIZE` (template `3T` — the autoscaler *hint*) and `POOL_VM_QUOTA_BYTES` (template `3300000000000` = 3.3 TB — the *guard*). Both sizing values are correct **only for the reference drives** (6 × 3.84 TB, 3 hosts); the render report flags them while they still equal the template, and the capacity model below says how to recompute them. There is no silent fallback: an unset value stops the block.
+**Variables** — defined in the site file `site-vars.sh` at the track root (copied from the template [00-overview/variables.sh](../00-overview/variables.sh)); **do not redefine them here**. This section consumes `POOL_VM_NAME` (template `vm-storage`), `CEPH_POOL_SIZE` / `CEPH_POOL_MIN_SIZE` (3 / 2), `POOL_VM_TARGET_SIZE` (template `3T` — the autoscaler *hint*) and `POOL_VM_QUOTA_BYTES` (template `3300000000000` = 3.3 TB — the *guard*), plus `POOL_CAPACITY_CEILING_BYTES` (template `PLACEHOLDER` — the shared ceiling both pools draw against; set it from the capacity model for this site's drives). Both sizing values are correct **only for the reference drives** (6 × 3.84 TB, 3 hosts); the render report flags them while they still equal the template, and the capacity model below says how to recompute them. There is no silent fallback: an unset value stops the block.
 
 Run pool commands on any node (they execute against the cluster), as one fail-closed block (track README, "Working-directory contract").
 
@@ -108,16 +108,19 @@ Rule to carry forward: **with 3 hosts and 2 OSDs per host, plan VM data ≤ ~43 
 
 ## Step 2 (optional) — A second pool for bulk/scratch data
 
-Add a second pool only when there is a genuine two-tier need — e.g. a scratch/archive dataset where capacity matters more than surviving a node loss. It **shares the ceiling** with vm-storage: with `size=2` each host holds on average 2/3 of the bulk data, so the binding rule becomes **vm data + 2/3 × bulk data ≤ 3.3 TB** — lower `POOL_VM_QUOTA_BYTES` in the site file (and re-run Step 1) before you give bulk any quota. The block refuses a combination that breaks the ceiling:
+Add a second pool only when there is a genuine two-tier need — e.g. a scratch/archive dataset where capacity matters more than surviving a node loss. It **shares the capacity ceiling** (`POOL_CAPACITY_CEILING_BYTES`, a required site value) with vm-storage: with `size=2` each host holds on average 2/3 of the bulk data, so the binding rule becomes **vm data + 2/3 × bulk data ≤ 3.3 TB** — lower `POOL_VM_QUOTA_BYTES` in the site file (and re-run Step 1) before you give bulk any quota. The block refuses a combination that breaks the ceiling:
 
 ```bash
 # DESTRUCTIVE-CAPABLE: pool deletion is irreversible. Create is safe; deletion is not.
 ( set -euo pipefail
   source "${CERBERUS_TRACK:?export CERBERUS_TRACK=/path/to/proxmox-ceph first (track README)}/site-vars.sh"
-  cerberus_require_vars POOL_VM_QUOTA_BYTES
+  cerberus_require_vars POOL_VM_QUOTA_BYTES POOL_CAPACITY_CEILING_BYTES
   : "${POOL_BULK_TARGET_SIZE:?export POOL_BULK_TARGET_SIZE (autoscaler hint, e.g. 1T)}"
   : "${POOL_BULK_QUOTA_BYTES:?export POOL_BULK_QUOTA_BYTES (the bulk pool limit, bytes)}"
-  CEILING_BYTES=3300000000000   # reference-build ceiling (Capacity model) — recompute for other drives
+  CEILING_BYTES="$POOL_CAPACITY_CEILING_BYTES"
+  [[ "$CEILING_BYTES" =~ ^[0-9]+$ ]] && [ "$CEILING_BYTES" -gt 0 ] \
+    || { echo "FATAL: POOL_CAPACITY_CEILING_BYTES must be a positive byte count (Capacity model) — got '$CEILING_BYTES'" >&2; exit 1; }
+  CEILING_BYTES=$((10#$CEILING_BYTES))
   (( POOL_VM_QUOTA_BYTES + 2 * POOL_BULK_QUOTA_BYTES / 3 <= CEILING_BYTES )) \
     || { echo "FATAL: vm quota + 2/3 x bulk quota exceeds the $CEILING_BYTES-byte ceiling — lower POOL_VM_QUOTA_BYTES first" >&2; exit 1; }
   pveceph pool create bulk-scratch \

@@ -2,3 +2,8 @@ __pycache__/
 validation-output/
 Results/
 *-FULLLOG.txt
+
+# the test corpus ships: sanitized field evidence (see
+# tests/fixtures/corpus/PROVENANCE.md). The blanket rule above is
+# for real run output, not for the fixtures.
+!tests/fixtures/corpus/**/*-FULLLOG.txt

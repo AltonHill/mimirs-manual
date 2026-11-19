@@ -44,6 +44,8 @@ Python 3.12 stock on Ubuntu 24.04 / DGX OS — stdlib only.
 """
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -1110,7 +1112,8 @@ def credential_tripwire(vars_, environ):
     return live
 
 
-RENDER_MARKER = ".bcm-render"
+MANIFEST_NAME = ".bcm-manifest.json"
+RENDER_TOOL = "bcm/scripts/runbook.py render"
 _IMAGE_EXT = (".svg", ".png", ".jpg", ".jpeg", ".gif")
 _LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)\)")
 
@@ -1143,6 +1146,114 @@ def _rewrite_links(text, src_path, dst_path, out_root, rendered, copies):
             return f"{label} (library file `{lib}`)" if label else f"library file `{lib}`"
         return m.group(0)
     return _LINK_RE.sub(repl, text)
+
+
+def _write_manifest(out):
+    """Record the fresh render as a JSON file manifest (path + sha256
+    for every file written). --force trusts this manifest and nothing
+    else: the old marker file conferred deletion rights on any
+    directory someone touched it into, and the recursive delete took
+    foreign files along with the render's own."""
+    entries = []
+    for dp, dns, fns in os.walk(out):
+        dns.sort()
+        for fn in sorted(fns):
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, out).replace(os.sep, "/")
+            if rel == MANIFEST_NAME:
+                continue
+            with open(full, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            entries.append({"path": rel, "sha256": digest})
+    entries.sort(key=lambda e: e["path"])
+    with open(os.path.join(out, MANIFEST_NAME), "w") as f:
+        json.dump({"version": 1, "tool": RENDER_TOOL, "files": entries},
+                  f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def _validated_render_files(out):
+    """The manifest's file list when `out` is exactly an intact
+    previous render by this tool — manifest valid, every listed file
+    present, unmodified and not a symlink, every directory accounted
+    for by a listed file, nothing extra present. Otherwise None."""
+    mpath = os.path.join(out, MANIFEST_NAME)
+    if os.path.islink(out) or not os.path.isfile(mpath) \
+            or os.path.islink(mpath):
+        return None
+    try:
+        with open(mpath) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 \
+            or data.get("tool") != RENDER_TOOL:
+        return None
+    files = data.get("files")
+    if not isinstance(files, list):
+        return None
+    listed = {}
+    for e in files:
+        if not isinstance(e, dict):
+            return None
+        rel, digest = e.get("path"), e.get("sha256")
+        if not isinstance(rel, str) or not isinstance(digest, str):
+            return None
+        if rel.startswith("/") or "\\" in rel \
+                or any(p in ("", ".", "..") for p in rel.split("/")):
+            return None
+        if rel in listed:
+            return None
+        listed[rel] = digest
+    seen_files = set()
+    seen_dirs = set()
+    for dp, dns, fns in os.walk(out):
+        for d in dns:
+            full = os.path.join(dp, d)
+            if os.path.islink(full):
+                return None
+            seen_dirs.add(os.path.relpath(full, out).replace(os.sep, "/"))
+        for fn in fns:
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, out).replace(os.sep, "/")
+            if rel == MANIFEST_NAME:
+                continue
+            if os.path.islink(full):
+                return None
+            seen_files.add(rel)
+    if seen_files != set(listed):
+        return None
+    for d in seen_dirs:
+        if not any(p.startswith(d + "/") for p in listed):
+            return None
+    for rel, digest in listed.items():
+        with open(os.path.join(out, *rel.split("/")), "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() != digest:
+                return None
+    return sorted(listed)
+
+
+def _replace_render_dir(out):
+    """Remove a previous render — only the manifest's listed files,
+    never a recursive delete. True when `out` was an intact previous
+    render (now removed); False when it must be refused."""
+    listed = _validated_render_files(out)
+    if listed is None:
+        return False
+    for rel in listed:
+        os.unlink(os.path.join(out, *rel.split("/")))
+    os.unlink(os.path.join(out, MANIFEST_NAME))
+    for dp, dns, fns in os.walk(out, topdown=False):
+        for d in dns:
+            try:
+                os.rmdir(os.path.join(dp, d))
+            except OSError:
+                pass
+    try:
+        os.rmdir(out)
+    except OSError:
+        pass
+    return True
 
 
 def pass_render(vars_, args):
@@ -1189,21 +1300,23 @@ def pass_render(vars_, args):
         print(bar, file=sys.stderr)
         sys.exit(3)
     # L2: a fresh directory every time. An existing --out is refused;
-    # --force replaces it only when a previous render wrote it (marker),
-    # never an arbitrary directory.
+    # --force replaces it only when it is an intact previous render —
+    # the directory matches its JSON file manifest exactly — never an
+    # arbitrary directory, and never by recursive delete.
     if os.path.exists(out):
         if not args.force:
             print(f"REFUSED: {out} exists — render writes a fresh directory "
                   f"(--force replaces a previous render's output)", file=sys.stderr)
             sys.exit(2)
-        if not os.path.isfile(os.path.join(out, RENDER_MARKER)):
-            print(f"REFUSED: {out} was not written by runbook.py render (no "
-                  f"{RENDER_MARKER} marker) — choose a fresh --out", file=sys.stderr)
+        if not _replace_render_dir(out):
+            print(f"REFUSED: {out} is not an intact previous render (no "
+                  f"valid {MANIFEST_NAME}, or its contents changed — "
+                  f"legacy marker-only directories, foreign or edited "
+                  f"files, and symlinks are never deleted) — remove it "
+                  f"manually if you mean to discard it, or choose a "
+                  f"fresh --out", file=sys.stderr)
             sys.exit(2)
-        shutil.rmtree(out)
     os.makedirs(out)
-    with open(os.path.join(out, RENDER_MARKER), "w") as f:
-        f.write("written by bcm/scripts/runbook.py render; --force may replace this directory\n")
     vals = _expand_vars(vars_)
     skip = {"99-role-mapping.md"}
     docs = [fn for fn in sorted(os.listdir(docs_dir))
@@ -1224,6 +1337,7 @@ def pass_render(vars_, args):
     for src, dst in sorted(copies.items()):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
+    _write_manifest(out)
     creds = sorted(k for k in vars_ if is_credential_class(k))
     unfilled = sorted(k for k, v in vals.items()
                       if "<" in v and ">" in v and k not in creds)

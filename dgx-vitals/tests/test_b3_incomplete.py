@@ -218,3 +218,24 @@ class IncompleteIsVisibleAndCounted(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ZeroHealthEvidence(unittest.TestCase):
+    """Issue #2 (2026-11-19): an NVSM summary of 0 healthy / 0 unhealthy
+    carries no positive health evidence; it must be INCOMPLETE, not PASS."""
+
+    def setUp(self):
+        self.vit = S.load_vitals()
+
+    def test_zero_healthy_is_incomplete_not_pass(self):
+        v, msg = self.vit._verdict_health(
+            "0 out of 260 checks are healthy\n"
+            "0 out of 260 checks are unhealthy\n")
+        self.assertEqual(v, self.vit.INCOMPLETE)
+        self.assertIn("no positive health evidence", msg)
+
+    def test_positive_health_still_passes(self):
+        v, _msg = self.vit._verdict_health(
+            "260 out of 260 checks are healthy\n"
+            "0 out of 260 checks are unhealthy\n")
+        self.assertEqual(v, self.vit.PASS)

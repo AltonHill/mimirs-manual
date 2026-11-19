@@ -287,7 +287,7 @@ host's health card embedded in its row:
   that never launched but was recorded as failed; it applies only to logs
   from runners before v2.0. An **NCCL not tested** line lists every host
   without an NCCL fabric result and why. One-off rulings go in a CSV
-  (`--adjudications`, columns `hostname,step,state,note`).
+  (`--adjudications`, columns `hostname,step,state,note,reviewer` — a ruling names its reviewer, states its reason, and can never set Complete).
 - It can also fold in harvested validation bundles (`--bundles DIR`;
   the bundle layout is in the Operators Guide). dgx-vitals wins where both exist, and the Source column always
   says which pipeline produced a row. `--bundle-out FILE.tar.gz` packs the

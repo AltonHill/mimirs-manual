@@ -114,6 +114,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -977,6 +978,32 @@ def main(argv=None):
                 f"real values and must never ship with the bundle.")
             return 2
 
+    # ---- input guard: never read through a symlink (issue #9). A linked
+    # input -- named directly, or anywhere inside a named directory --
+    # would pull content from outside the bundle into the anonymized
+    # output. The output side has refused symlinks since W6; the input
+    # side refuses them too, before anything is read. VCS internals are
+    # exempt: iter_files never reads them.
+    for inp in args.inputs:
+        p = Path(inp)
+        if p.is_symlink():
+            err(f"input {inp!r} is a symlink (-> {os.path.realpath(p)!r}); "
+                f"refusing to read through it.")
+            return 2
+        if p.is_dir():
+            for f in sorted(p.rglob("*")):
+                relp = f.relative_to(p)
+                vcs = [i for i, part in enumerate(relp.parts)
+                       if part in VCS_DIRS]
+                upto = vcs[0] if vcs else len(relp.parts)
+                for i in range(1, upto + 1):
+                    q = p.joinpath(*relp.parts[:i])
+                    if q.is_symlink():
+                        err(f"input {str(q)!r} is a symlink "
+                            f"(-> {os.path.realpath(q)!r}); refusing to "
+                            f"read through it.")
+                        return 2
+
     # ---- gather inputs: text files are scrubbed, everything else copied
     texts, copies = {}, {}
     for p, rel in iter_files(args.inputs):
@@ -1253,8 +1280,40 @@ def main(argv=None):
             else:
                 shutil.copyfile(payload, dest)
             written.add(new_rel)
+        # The map holds the real values: never follow a symlink
+        # into truncating its target, and never leave the file
+        # group/other-readable. A symlinked or loose map path is
+        # refused outright; the write goes through a descriptor
+        # created 0600 with the mode re-asserted on the fd, so the
+        # process umask cannot widen it.
+        if os.path.islink(mappath):
+            err(f"map path {str(mappath)!r} is a symlink — refusing to "
+                f"follow it; the map contains the real values")
+            return 2
+        if mappath.exists():
+            mmode = mappath.stat().st_mode
+            if not stat.S_ISREG(mmode):
+                err(f"map path {str(mappath)!r} is not a regular file "
+                    f"— refusing")
+                return 2
+            if mmode & 0o077:
+                err(f"map {str(mappath)!r} is group/other-accessible "
+                    f"({stat.S_IMODE(mmode):04o}) — chmod 0600 or remove "
+                    f"it; the map contains the real values")
+                return 2
         mappath.parent.mkdir(parents=True, exist_ok=True)
-        mappath.write_text(mapdoc, encoding="utf-8")
+        mfd = os.open(mappath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                      | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(mfd, 0o600)
+            with os.fdopen(mfd, "w", encoding="utf-8") as mfh:
+                mfh.write(mapdoc)
+        except BaseException:
+            try:
+                os.close(mfd)
+            except OSError:
+                pass
+            raise
         print(f"\nWROTE {mappath.resolve()} -- PRIVATE, contains real values. "
               f"Do not commit.", file=sys.stderr)
         # re-scan what is actually on disk in --out (all of it)

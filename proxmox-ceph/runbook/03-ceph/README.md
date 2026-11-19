@@ -107,9 +107,9 @@ ceph -s | grep mgr   # expect: mgr: 3 daemons active
 
 ## Step 5 — Create the OSDs (on each node, for its own drives)
 
-> **DESTRUCTIVE — this wipes the target device.** Only ever run against the `/dev/disk/by-id/` names of the two PM1743 NVMe drives on that node — recorded per node in the site file as `NODE<n>_OSD1_BYID` / `NODE<n>_OSD2_BYID` (00a §4). **by-id on purpose:** the name carries the drive's model and serial, which is how this step proves its target is a PM1743 and not the boot volume. (by-path, the BCM disk-layout standard, carries neither; Ceph OSDs sit on LVM, so name persistence is irrelevant to this one-time step.)
+> **DESTRUCTIVE — this wipes the target device.** Only ever run against the `/dev/disk/by-id/` names of the two PM1743 NVMe drives on that node — recorded per node in the site file as `NODE<n>_OSD1_BYID` / `NODE<n>_OSD2_BYID` (00a §4). **by-id on purpose:** the name carries the drive's model and serial, and the block below parses that name and refuses to proceed unless the resolved device reports exactly that model and serial — the name alone proves nothing. (by-path, the BCM disk-layout standard, carries neither; Ceph OSDs sit on LVM, so name persistence is irrelevant to this one-time step.)
 
-On **each node, for its own drives** — the block picks this node's two variables from `/root/cerberus-node.env` (02 §1), shows model/serial/size for each, refuses anything that is not a whole PM1743-class NVMe of ~3.84 TB or that is not blank, and asks before each create:
+On **each node, for its own drives** — the block picks this node's two variables from `/root/cerberus-node.env` (02 §1), verifies each drive's reported model and serial against the recorded by-id name, and refuses anything that does not match, that is not a whole PM1743-class NVMe of ~3.84 TB, or that is not blank, and asks before each create:
 
 ```bash
 ( set -euo pipefail
@@ -122,6 +122,17 @@ On **each node, for its own drives** — the block picks this node's two variabl
     [ -e "$dev" ] || { echo "FATAL: $v=$dev does not exist on this node" >&2; exit 1; }
     real="$(readlink -f "$dev")"
     lsblk -dno NAME,MODEL,SERIAL,SIZE "$real"
+    base="${dev##*/}"; base="${base#nvme-}"
+    case "$base" in eui.*) echo "FATAL: $v=$dev is an eui by-id alias — record the model_serial name at 00a §4 so the target can be bound to its drive" >&2; exit 1 ;; esac
+    case "$base" in *_1) base="${base%_1}" ;; esac
+    exp_serial="${base##*_}"; exp_model="${base%_*}"
+    model="$(lsblk -dno MODEL "$real" | tr -s ' ' | sed 's/^ //; s/ $//')"
+    serial="$(lsblk -dno SERIAL "$real" | tr -d '[:space:]')"
+    [ "$serial" = "$exp_serial" ] \
+      || { echo "FATAL: $real reports serial '$serial', not the '$exp_serial' recorded in $v — wrong or swapped drive. NOT creating." >&2; exit 1; }
+    [ "$(printf '%s' "$model" | tr '_' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')" = "$(printf '%s' "$exp_model" | tr '_' ' ' | tr -s ' ')" ] \
+      || { echo "FATAL: $real reports model '$model', not '$exp_model' from the recorded by-id name in $v. NOT creating." >&2; exit 1; }
+    echo "Identity verified for $dev: model '$model', serial '$serial' match the recorded by-id name."
     [ "$(lsblk -nro NAME "$real" | wc -l)" -eq 1 ] \
       || { echo "FATAL: $real has partitions/holders — not blank. If it is an old Ceph drive, Step 5a wipes it; if it is the boot volume, the site file is wrong." >&2; exit 1; }
     size=$(lsblk -bdno SIZE "$real")
@@ -138,7 +149,7 @@ Repeat on **node-2** and **node-3** (six OSDs total).
 
 ### Step 5a — Wipe a previously used OSD drive (only if preflight said "present but NOT counted")
 
-`scripts/preflight.sh` counts only **blank** NVMe devices; a drive with partitions or LVM holders (an earlier Ceph build, a vendor test image) is listed as *present but not counted*, and Step 5 refuses it. **DESTRUCTIVE / MANUAL-ONLY:** wipe only a drive you have identified by model and serial as one of this node's two PM1743s — never the boot volume:
+`scripts/preflight.sh` counts only **blank** NVMe devices; a drive with partitions or LVM holders (an earlier Ceph build, a vendor test image) is listed as *present but not counted*, and Step 5 refuses it. **DESTRUCTIVE / MANUAL-ONLY:** wipe only a drive you have identified by model and serial as one of this node's two PM1743s — never the boot volume. The block verifies the resolved device reports the model and serial encoded in the recorded by-id name before it asks:
 
 ```bash
 ( set -euo pipefail
@@ -149,6 +160,17 @@ Repeat on **node-2** and **node-3** (six OSDs total).
   cerberus_require_vars "$WIPE_VAR"
   dev="${!WIPE_VAR}"; real="$(readlink -f "$dev")"
   lsblk -o NAME,MODEL,SERIAL,SIZE,FSTYPE,MOUNTPOINTS "$real"
+  base="${dev##*/}"; base="${base#nvme-}"
+  case "$base" in eui.*) echo "FATAL: $WIPE_VAR=$dev is an eui by-id alias — record the model_serial name at 00a §4 so the wipe target can be bound to its drive" >&2; exit 1 ;; esac
+  case "$base" in *_1) base="${base%_1}" ;; esac
+  exp_serial="${base##*_}"; exp_model="${base%_*}"
+  model="$(lsblk -dno MODEL "$real" | tr -s ' ' | sed 's/^ //; s/ $//')"
+  serial="$(lsblk -dno SERIAL "$real" | tr -d '[:space:]')"
+  [ "$serial" = "$exp_serial" ] \
+    || { echo "FATAL: $real reports serial '$serial', not the '$exp_serial' recorded in $WIPE_VAR — wrong or swapped drive. NOT wiping." >&2; exit 1; }
+  [ "$(printf '%s' "$model" | tr '_' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')" = "$(printf '%s' "$exp_model" | tr '_' ' ' | tr -s ' ')" ] \
+    || { echo "FATAL: $real reports model '$model', not '$exp_model' from the recorded by-id name in $WIPE_VAR. NOT wiping." >&2; exit 1; }
+  echo "Identity verified for $dev: model '$model', serial '$serial' match the recorded by-id name."
   grep -q "^$real" < <(findmnt -rno SOURCE) && { echo "FATAL: $real (or a partition) is mounted" >&2; exit 1; }
   read -rp "WIPE $dev ($real) — all data and LVM on it destroyed? [yes/NO] " ans
   [ "$ans" = "yes" ] || { echo "Not wiped."; exit 1; }

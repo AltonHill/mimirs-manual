@@ -36,7 +36,7 @@ The cluster is built; re-verify the physical layer didn't shift under you:
       printf "%s %s: " "$(hostname)" "$i"; ethtool "$i" 2>/dev/null | grep -E "Speed|Link detected" | tr "\n" " "; echo; done'
   done
   # end-to-end MTU, corosync UDP on both links, PBS backup VLAN
-  bash "$CERBERUS_TRACK/scripts/net-verify.sh"
+  bash "$CERBERUS_TRACK/scripts/net-verify.sh" --allow-remote-probes
 )
 ```
 

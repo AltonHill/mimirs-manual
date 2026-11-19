@@ -383,6 +383,22 @@ sys.exit(1 if (local & set(v)) or "CLUSTER_NAME" not in v else 0)' \
     else
         echo "FAIL --force guard (rc=$rc)"; fail=1
     fi
+    # L2b: a foreign file planted INSIDE a previous render, and a
+    # legacy marker-only directory, are both refused with contents
+    # preserved — the manifest, not a marker, is the proof.
+    cp -r "$TMP/out" "$TMP/out-foreign" && : > "$TMP/out-foreign/keep2.txt"
+    mkdir -p "$TMP/legacy" && : > "$TMP/legacy/.cerberus-render" && : > "$TMP/legacy/keep.txt"
+    set +e
+    "$TRACK_DIR/scripts/render.py" --vars "$TEMPLATE" --out "$TMP/out-foreign" --force >/dev/null 2>&1
+    rc1=$?
+    "$TRACK_DIR/scripts/render.py" --vars "$TEMPLATE" --out "$TMP/legacy" --force >/dev/null 2>&1
+    rc2=$?
+    set -e
+    if [ "$rc1" -ne 0 ] && [ "$rc2" -ne 0 ] && [ -f "$TMP/out-foreign/keep2.txt" ] && [ -f "$TMP/legacy/keep.txt" ]; then
+        echo "OK   --force preserves foreign files in a render and refuses a legacy marker-only directory"
+    else
+        echo "FAIL --force foreign-file/legacy guard (rc1=$rc1 rc2=$rc2)"; fail=1
+    fi
 else
     echo "FAIL render.py"; fail=1
 fi
@@ -470,8 +486,9 @@ fi
 if grep -q '^  MAILTO=ops@example.com$' "$TMP/render.log" \
    && grep -q '^  POOL_VM_QUOTA_BYTES=' "$TMP/render.log" \
    && grep -q '^  POOL_VM_TARGET_SIZE=' "$TMP/render.log" \
+   && grep -q '^  POOL_CAPACITY_CEILING_BYTES=' "$TMP/render.log" \
    && grep -q '^  PBS_DATASTORE_PATH=' "$TMP/render.log"; then
-    echo "OK   template-default audit reports MAILTO, POOL_VM_TARGET_SIZE, POOL_VM_QUOTA_BYTES, PBS_DATASTORE_PATH"
+    echo "OK   template-default audit reports MAILTO, POOL_VM_TARGET_SIZE, POOL_VM_QUOTA_BYTES, POOL_CAPACITY_CEILING_BYTES, PBS_DATASTORE_PATH"
 else
     echo "FAIL template-default audit does not report MAILTO / pool sizing / PBS_DATASTORE_PATH"; fail=1
 fi

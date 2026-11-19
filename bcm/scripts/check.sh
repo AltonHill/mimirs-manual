@@ -393,7 +393,14 @@ def texts(path, data):
 
 hits, scanned, partial = 0, 0, []
 for dirpath, dirnames, filenames in os.walk(root):
-    dirnames[:] = sorted(d for d in dirnames if d != ".git")
+    # Scope (Loki, 2026-11-18): veil/ is excluded at the root — the
+    # anonymizer's worked examples ARE the deny-list's subject matter
+    # (our own lab names, carried as examples). Veil is policed by
+    # its own assertGone suite; every other path stays swept.
+    if os.path.relpath(dirpath, root) == ".":
+        dirnames[:] = sorted(d for d in dirnames if d not in (".git", "veil"))
+    else:
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
     for fn in sorted(filenames):
         path = os.path.join(dirpath, fn)
         rel = os.path.relpath(path, root)
@@ -413,7 +420,7 @@ for dirpath, dirnames, filenames in os.walk(root):
                         print(f"LEAK {where}:{ln}: {line.strip()[:160]}")
                         break
 
-print(f"leak scan: {len(patterns)} patterns, {scanned} files under {root} (.git excluded)")
+print(f"leak scan: {len(patterns)} patterns, {scanned} files under {root} (.git and veil/ excluded)")
 for p in partial:
     print(f"  partial coverage: {p}")
 if hits:
@@ -689,6 +696,14 @@ mkdir -p "$SMOKE/foreign" && : > "$SMOKE/foreign/keep.txt"
 ./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/foreign" --force >/dev/null 2>&1 \
     && sfail "render L2: --force replaced a directory render did not write"
 [ -f "$SMOKE/foreign/keep.txt" ] || sfail "render L2: a foreign directory lost its contents"
+cp -r "$SMOKE/render" "$SMOKE/render-foreign" && : > "$SMOKE/render-foreign/keep2.txt"
+./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/render-foreign" --force >/dev/null 2>&1 \
+    && sfail "render L2: --force replaced a render containing a foreign file"
+[ -f "$SMOKE/render-foreign/keep2.txt" ] || sfail "render L2: a foreign file inside a render was deleted"
+mkdir -p "$SMOKE/legacy" && : > "$SMOKE/legacy/.bcm-render" && : > "$SMOKE/legacy/keep.txt"
+./scripts/runbook.py --vars 00-variables.sh render --out "$SMOKE/legacy" --force >/dev/null 2>&1 \
+    && sfail "render L2: --force replaced a legacy marker-only directory"
+[ -f "$SMOKE/legacy/keep.txt" ] || sfail "render L2: a legacy directory lost its contents"
 [ -f "$SMOKE/render/diagrams/cluster-128.svg" ] || sfail "render L2: README's diagram not copied into the deliverable"
 grep -q 'library file `bcm/00-variables.sh`' "$SMOKE/render/README.md" \
     || sfail "render L2: link to the variables template not rewritten as a library reference"

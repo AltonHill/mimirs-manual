@@ -130,5 +130,28 @@ class DocsTruth(unittest.TestCase):
         self.assertLess(len(q.splitlines()), 130)     # one page, roughly
 
 
+
+class RepoLicense(unittest.TestCase):
+    """Issue #18 (2026-11-19): the repository carries an explicit
+    license — MIT, copyright E. Alton Hill — linked from the root
+    README and scoped so it makes no claim over third-party
+    material."""
+
+    def root_read(self, rel):
+        return S.read_text(os.path.join(os.path.dirname(S.REPO), rel))
+
+    def test_license_file_is_standard_mit(self):
+        text = self.root_read("LICENSE")
+        self.assertIn("MIT License", text)
+        self.assertIn("Copyright (c) 2026 E. Alton Hill", text)
+        self.assertIn("Permission is hereby granted, free of charge", text)
+        self.assertIn('THE SOFTWARE IS PROVIDED "AS IS"', text)
+
+    def test_root_readme_links_license_and_scopes_it(self):
+        text = self.root_read("README.md")
+        self.assertIn("[MIT License](LICENSE)", text)
+        self.assertIn("their own licenses", text)
+
+
 if __name__ == "__main__":
     unittest.main()

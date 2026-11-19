@@ -682,6 +682,9 @@ def _verdict_health(text):
         u, m = counts["unknown"]
         return INCOMPLETE, f"{u} of {m} checks unknown"
     h, m = counts["healthy"]
+    if h == 0:
+        return INCOMPLETE, (f"0 of {m} checks healthy \u2014 "
+                            "no positive health evidence")
     return PASS, f"{h} of {m} checks healthy, 0 unhealthy"
 
 
@@ -847,7 +850,7 @@ class SSHRunner:
             # sshd starts the remote shell as a session (and process
             # group) leader, so its $$ is the step's process-group id.
             line = f"echo {PGID_MARK}$$; exec {line}"
-        cmd = ["ssh"] + self.opts + [self.target, line]
+        cmd = ["ssh"] + self.opts + ["--", self.target, line]
         # In batch mode the ssh client runs in its own session, so the
         # operator's Ctrl-C reaches only this runner, never the step's
         # ssh: an interrupt is recorded as an interrupt, not as a step
@@ -857,7 +860,7 @@ class SSHRunner:
                      new_session=self.batch, interruptible=track)
 
     def fetch(self, remote_path, dest_path):
-        cmd = ["scp"] + self.opts + [f"{self.target}:{remote_path}", dest_path]
+        cmd = ["scp"] + self.opts + ["--", f"{self.target}:{remote_path}", dest_path]
         rc, _, err = _exec(cmd, 120, None)
         if rc != 0:
             raise OSError(f"scp failed for {remote_path}: {err.strip()}")
@@ -1319,6 +1322,19 @@ STALL_DEFAULT_S = 5400      # logs before v2.0 carry no timeout on the marker
 _MARKER_TIMEOUT_RE = re.compile(r"^>>> step \d+/\d+: .* · timeout (\d+)s\s*$")
 
 
+def _contained_host_dir(out_root, hostname):
+    """out_root/hostname, guaranteed to resolve inside out_root.
+    Hostnames are validated in read_host_entries; this is the check at
+    the point of use, so no caller can write or delete outside --out
+    (issue #5)."""
+    root = os.path.realpath(out_root)
+    hd = os.path.realpath(os.path.join(root, hostname))
+    if hd.startswith(root + os.sep):
+        return hd
+    raise ValueError(f"hostname {hostname!r} escapes the output "
+                     f"directory {out_root!r}")
+
+
 def wave_state(out_root, hostname, now=None):
     """(state, detail) for one host in a wave output root. A host is
     "done" only when its FULLLOG carries the OVERALL line (REVIEW-A H4/M6:
@@ -1326,7 +1342,7 @@ def wave_state(out_root, hostname, now=None):
     "interrupted" (the operator stopped the run), "stalled" (no FULLLOG
     update for longer than the running step's timeout plus slack),
     "running" (detail: where it is), or "waiting" (no FULLLOG yet)."""
-    host_dir = os.path.join(out_root, hostname)
+    host_dir = _contained_host_dir(out_root, hostname)
     fulllog = os.path.join(host_dir, f"{hostname}-FULLLOG.txt")
     if not os.path.exists(fulllog):
         return "waiting", ""
@@ -1525,7 +1541,7 @@ def run_host(hostname, runner, out_root, steps, expected_gpus,
     NCCL requirement. Without a plan, `steps` / `expected_gpus` are used
     as given. `entry` is the hosts-data entry identity is checked
     against (default: just the hostname)."""
-    host_dir = os.path.join(out_root, hostname)
+    host_dir = _contained_host_dir(out_root, hostname)
     os.makedirs(host_dir, exist_ok=True)
     fulllog_path = os.path.join(host_dir, f"{hostname}-FULLLOG.txt")
     dry = getattr(runner, "dry", False)
@@ -1835,6 +1851,7 @@ def read_host_entries(path):
     as utf-8-sig so a file saved by Excel doesn't corrupt the first
     hostname."""
     entries = []
+    seen = {}
     with open(path, newline="", encoding="utf-8-sig") as f:
         lines = [ln for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
     if not lines:
@@ -1864,6 +1881,19 @@ def read_host_entries(path):
         name = get("hostname")
         if not name:
             continue
+        if name in (".", "..") or "/" in name or "\\" in name \
+                or name.startswith("-"):
+            raise HostsFileError(
+                f"{path}: row {n} ({name}): hostname must be a plain "
+                "name — no path separators, traversal, or "
+                "leading '-' (it becomes a directory under --out and "
+                "the default SSH target)")
+        if name in seen:
+            raise HostsFileError(
+                f"{path}: row {n} ({name}): duplicate hostname — "
+                f" first defined at row {seen[name]}; two entries "
+                "would share one evidence directory")
+        seen[name] = n
         gpus = get("gpus")
         if gpus:
             if not gpus.isdigit() or int(gpus) < 1:
@@ -1871,13 +1901,23 @@ def read_host_entries(path):
                                      f"'{gpus}' is not a positive integer")
             gpus = int(gpus)
         given = get("address")
+        # SSH connects to the address column, else the fleet list's
+        # LAN IP, else the name itself
+        addr = given or get("lan_ip") or name
+        user = get("user") or None
+        for field, val in (("address", addr), ("user", user)):
+            if val and (val.startswith("-")
+                        or any(c.isspace() for c in val)):
+                raise HostsFileError(
+                    f"{path}: row {n} ({name}): {field} '{val}' is "
+                    "refused — a leading '-' or whitespace "
+                    "would be parsed as an ssh/scp option, not a "
+                    "destination")
         entries.append({"name": name,
-                        # SSH connects to the address column, else the
-                        # fleet list's LAN IP, else the name itself
-                        "address": given or get("lan_ip") or name,
+                        "address": addr,
                         "address_given": given,
                         "lan_ip": get("lan_ip"), "bmc_ip": get("bmc_ip"),
-                        "user": get("user") or None, "gpus": gpus or None,
+                        "user": user, "gpus": gpus or None,
                         "nvlink": get("nvlink") or None,
                         "serial": get("serial") or None})
     return entries

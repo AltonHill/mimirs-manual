@@ -18,6 +18,7 @@ import json
 import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1152,3 +1153,102 @@ class N2ClientTokenInsideUnlistedFqdn(VeilCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class W8InputSymlinkGuard(VeilCase):
+    """Issue #9 (2026-11-19): input symlinks are refused before any read,
+    the mirror of the W6 output-side guard."""
+
+    def test_w8a_explicit_input_symlink_refused(self):
+        outside = self.tmp / "outside.md"
+        outside.write_text("Acme Widgets secret\n")
+        link = self.tmp / "link.md"
+        os.symlink(outside, link)
+        r = self.write(*ACME, inputs=[str(link)])
+        self.assertRc(r, 2)
+        self.assertIn("is a symlink", r.stderr)
+        self.assertEqual(self.outfiles(), {})
+
+    def test_w8b_symlinked_file_inside_bundle_refused(self):
+        outside = self.tmp / "outside.md"
+        outside.write_text("Acme Widgets secret\n")
+        self.bundle({"real.md": "Acme Widgets\n"})
+        os.symlink(outside, self.inp / "sneaky.md")
+        r = self.write(*ACME)
+        self.assertRc(r, 2)
+        self.assertIn("is a symlink", r.stderr)
+        self.assertEqual(self.outfiles(), {})
+
+    def test_w8c_symlinked_dir_inside_bundle_refused(self):
+        outside_dir = self.tmp / "outside-dir"
+        outside_dir.mkdir()
+        (outside_dir / "x.md").write_text("Acme Widgets secret\n")
+        self.bundle({"real.md": "Acme Widgets\n"})
+        os.symlink(outside_dir, self.inp / "linked-dir")
+        r = self.write(*ACME)
+        self.assertRc(r, 2)
+        self.assertIn("is a symlink", r.stderr)
+        self.assertEqual(self.outfiles(), {})
+
+    def test_w8d_symlink_inside_dotgit_never_read_and_allowed(self):
+        self.bundle({"real.md": "Acme Widgets\n"})
+        gitdir = self.inp / ".git"
+        gitdir.mkdir()
+        outside = self.tmp / "outside.md"
+        outside.write_text("Acme Widgets secret\n")
+        os.symlink(outside, gitdir / "link")
+        r = self.write(*ACME)
+        self.assertRc(r, 0)
+        for data in self.outfiles().values():
+            self.assertNotIn(b"secret", data)
+
+
+class W9MapPermissions(VeilCase):
+    """Issue #17 (2026-11-19): the identity map holds the real values.
+    It is written through a descriptor created 0600 (the umask cannot
+    widen it), and a symlinked or group/other-accessible map path is
+    refused before any truncation."""
+
+    def test_w9a_fresh_map_is_0600_under_zero_umask(self):
+        self.bundle({"note.md": "Acme Widgets\n"})
+        old = os.umask(0)
+        try:
+            r = self.write(*ACME)
+        finally:
+            os.umask(old)
+        self.assertRc(r, 0)
+        mappath = self.tmp / "anonymize-map.json"
+        self.assertTrue(mappath.exists())
+        self.assertEqual(stat.S_IMODE(mappath.stat().st_mode), 0o600)
+
+    def test_w9b_loose_existing_map_refused_and_preserved(self):
+        self.bundle({"note.md": "Acme Widgets\n"})
+        mappath = self.tmp / "my-map.json"
+        mappath.write_text("sentinel\n", encoding="utf-8")
+        os.chmod(mappath, 0o644)
+        r = self.write(*ACME, "--map", str(mappath))
+        self.assertRc(r, 2)
+        self.assertIn("group/other-accessible", r.stderr)
+        self.assertEqual(mappath.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_w9c_map_symlink_refused_target_preserved(self):
+        self.bundle({"note.md": "Acme Widgets\n"})
+        target = self.tmp / "target.json"
+        target.write_text("sentinel\n", encoding="utf-8")
+        os.chmod(target, 0o600)
+        link = self.tmp / "link-map.json"
+        os.symlink(target, link)
+        r = self.write(*ACME, "--map", str(link))
+        self.assertRc(r, 2)
+        self.assertIn("is a symlink", r.stderr)
+        self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_w9d_existing_0600_map_rewritten(self):
+        self.bundle({"note.md": "Acme Widgets\n"})
+        mappath = self.tmp / "my-map.json"
+        mappath.write_text("{}\n", encoding="utf-8")
+        os.chmod(mappath, 0o600)
+        r = self.write(*ACME, "--map", str(mappath))
+        self.assertRc(r, 0)
+        self.assertGreater(len(mappath.read_text(encoding="utf-8")), 10)
+        self.assertEqual(stat.S_IMODE(mappath.stat().st_mode), 0o600)

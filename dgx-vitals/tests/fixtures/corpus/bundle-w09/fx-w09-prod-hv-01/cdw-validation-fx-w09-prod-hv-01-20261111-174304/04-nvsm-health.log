@@ -61,7 +61,7 @@ Verify DIMM part number.............................................. Unhealthy
     Mismatch in DIMM 'CPU1_DIMM_H2' part number, expected is '[HMCG94AHBRA48* M321R8GA0EB2-* MTC40F2046S1RC64BD2*]' found is 'MTC40F2046S1RC64BH1 2SKK'
 Verify DIMM vendors.................................................. Healthy
 Verify DIMM vendors consistency...................................... Healthy
-Verify chassis [Serial:1954126000062] fan presence................... Healthy
+Verify chassis [Serial:9000000000053] fan presence................... Healthy
 Verify GPUs VBIOS version consistency................................ Healthy
 VBIOS Version [GPU0 [00000000:1A:00.0]] [97.10.64.00.0C]
 Inforom Storage Version [GPU0 [00000000:1A:00.0]] [G540.0216.00.03]
@@ -89,7 +89,7 @@ Check SMART status of NVMe devices................................... Healthy
 Verify NVIDIA ConnectX devices firmware version consistency.......... Healthy
 Verify GPU's identified using nvidia-smi............................. Healthy
 Verify installed NVMe devices........................................ Healthy
-Verify chassis [Serial:1954126000062] power supply presence.......... Healthy
+Verify chassis [Serial:9000000000053] power supply presence.......... Healthy
 Check PSU Info (Vendor, Model) for Consistency....................... Healthy
 GPU link speed [0000:bc:00.0][64GT/s]................................ Healthy
 GPU link width [0000:bc:00.0][x16]................................... Healthy
@@ -323,7 +323,7 @@ Checking NVLink speed [GPU7 [0000:f0:00.0] Link 17][53.125 GB/s]..... Healthy
 Checking NVLink speed [GPU7 [0000:f0:00.0] Link 4][53.125 GB/s]...... Healthy
 Checking NVLink speed [GPU7 [0000:f0:00.0] Link 8][53.125 GB/s]...... Healthy
 Checking NVLink speed [GPU7 [0000:f0:00.0] Link 14][53.125 GB/s]..... Healthy
-Check BMC sensor thresholds for chassis [Serial: 1954126000062] ..... Healthy
+Check BMC sensor thresholds for chassis [Serial: 9000000000053] ..... Healthy
     Checked 282 sensor values against BMC thresholds.
 BMC Firmware Revision [1.01.44]
 HGX Management Controller Firmware Revision [Version Unavailable]
@@ -331,8 +331,8 @@ BaseOS Version [7.5.0]
 BIOS Version [01.00.08]
 Linux kernel version [6.8.0-138-generic]
 System Uptime [up 11 hours, 9 minutes]
-Serial Number [1954126000062]
-Chassis [1954126000062] Power Supply Info
+Serial Number [9000000000053]
+Chassis [9000000000053] Power Supply Info
     [PSU0] Vendor[Liteon Power] Model[SP-2552-6R] Serial[6PL6R0401631366] Firmware[Firmware Error]
     [PSU1] Vendor[Liteon Power] Model[SP-2552-6R] Serial[6PL6R04016314Q7] Firmware[07.30.2e.36.2e.30.2e.36]
     [PSU2] Vendor[Liteon Power] Model[SP-2552-6R] Serial[6PL6R040163158Z] Firmware[07.30.2e.36.2e.30.2e.36]
@@ -350,12 +350,12 @@ System Summary
 --------------
     Product Name:DGXB300
     Manufacturer:NVIDIA
-    Serial Number:1954126000062
+    Serial Number:9000000000053
     Uptime:up 11 hours, 9 minutes
 
 MotherBoard:
     BIOS Version:01.00.08
-    Serial Number:5550B902000163912E
+    Serial Number:SYN00000000000056X
 
 BMC:
     Firmware Version:1.01.44

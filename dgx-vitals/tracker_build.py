@@ -61,8 +61,10 @@ Exit codes:
         carries no evidence (NO DATA, SKIPPED, DRY RUN).
     1   the tool itself failed or could not fully read its input: a bad
         argument, a missing or unreadable root, a corrupt or unidentifiable
-        bundle, quarantined evidence, an adjudication row that matched
-        nothing, or a sheet that could not be written. 1 wins over 2.
+        bundle, quarantined evidence, an adjudication row that was
+        not applied (no match, an attempt to set Complete, a missing
+        reviewer, or an insubstantive note), or a sheet that could not
+        be written. 1 wins over 2.
     No path exits 0 on input it could not fully read.
 
 Judgement rules (deliberate; also written into the sheet's README tab):
@@ -1555,7 +1557,11 @@ def adjudicate(hosts, manual):
     report dict for the sheet footer. Nothing is deleted: a ruled false
     positive becomes Warned (or Skipped for never-ran NCCL), with the
     reason appended to the row's notes and the ruling, with the facts
-    drawn from that host's own logs, written in the Known Issues block."""
+    drawn from that host's own logs, written in the Known Issues block.
+    Manual rows are signed acts: each must name a reviewer and carry a
+    substantive note, and may set only Failed, Skipped or Warned — a
+    step earns Complete only from evidence, never from a ruling. A row
+    that fails validation is reported NOT APPLIED, with the reason."""
     report = {"KI-1": [], "KI-2": [], "manual": [], "unmatched": [],
               "ki1_facts": [], "ki2_facts": []}
     for name in sorted(hosts):
@@ -1581,11 +1587,24 @@ def adjudicate(hosts, manual):
             r.overall = ""
             report["KI-2"].append(name)
             report["ki2_facts"].append((name, r.nccl_ev))
-    for host, step, state, note in manual:
+    for host, step, state, note, reviewer in manual:
         r = hosts.get(host)
-        if r is None or (step != NCCL and step not in TRACKER_STEPS) \
-                or state not in ("Complete", "Failed", "Skipped", "Warned"):
-            report["unmatched"].append((host, step, state, note))
+        reason = None
+        if r is None or (step != NCCL and step not in TRACKER_STEPS):
+            reason = "matched no host/step"
+        elif state == "Complete":
+            reason = ("manual adjudications cannot set Complete — a "
+                      "step earns Complete only from evidence; re-run "
+                      "the step, or rule it Warned or Skipped")
+        elif state not in ("Failed", "Skipped", "Warned"):
+            reason = f"state '{state}' is not Failed, Skipped or Warned"
+        elif not reviewer:
+            reason = "no reviewer recorded — a ruling names who ruled"
+        elif len(note) < 20:
+            reason = ("note is not substantive — a ruling states its "
+                      "reason in 20 or more characters")
+        if reason is not None:
+            report["unmatched"].append((host, step, state, note, reason))
             continue
         if step == NCCL:
             r.nccl = state
@@ -1593,9 +1612,9 @@ def adjudicate(hosts, manual):
             r.steps[step] = state
         r.card_dirty = r.adjudicated = True
         r.notes.append(f"Manual adjudication: {step} set to {state}"
-                       + (f" — {note}" if note else ""))
+                       f" — {note} (reviewer: {reviewer})")
         r.overall = ""
-        report["manual"].append((host, step, state, note))
+        report["manual"].append((host, step, state, note, reviewer))
     return report
 
 
@@ -1686,7 +1705,10 @@ def nccl_footer(groups):
 
 
 def read_adjudications(path):
-    """Manual adjudications CSV (header hostname,step,state,note)."""
+    """Manual adjudications CSV (header
+    hostname,step,state,note,reviewer). Returns 5-tuples; adjudicate()
+    validates each row (a row that fails is reported NOT APPLIED and
+    the build exits 1). Only fully blank lines are skipped here."""
     rows = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -1694,8 +1716,9 @@ def read_adjudications(path):
             step = (row.get("step") or "").strip()
             state = (row.get("state") or "").strip()
             note = (row.get("note") or "").strip()
-            if host and step and state:
-                rows.append((host, step, state, note))
+            reviewer = (row.get("reviewer") or "").strip()
+            if host or step or state or note or reviewer:
+                rows.append((host, step, state, note, reviewer))
     return rows
 
 # ---------------------------------------------------------------------------
@@ -1918,19 +1941,37 @@ def quarantine_rows(ingest):
     return out
 
 
+_FORMULA_LEADS = ("=", "+", "-", "@")
+
+
+def _sheet_safe(value):
+    """Neutralize spreadsheet formula injection (issue #10). A text
+    cell whose first non-blank character is =, +, - or @ is executed
+    as a formula when the export is opened in Excel or Sheets, and
+    evidence text (hostnames, FULLLOG notes, quarantine reasons) is
+    not trusted to be free of them. Prefixing an apostrophe -- the
+    spreadsheet text marker -- keeps the text literal. Non-strings
+    (the numeric cells) pass through untouched."""
+    if isinstance(value, str) and \
+            value.lstrip(" \t")[:1] in _FORMULA_LEADS:
+        return "'" + value
+    return value
+
+
 def write_csv(path, order, hosts, ingest=None):
     """The sheet's rows as CSV (same columns, same verdicts); the Health
     Card column holds the embedded card's <root>/<host>/<file> path.
     Quarantined input follows as rows whose Overall is QUARANTINED."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(COLUMNS)
+        w.writerow([_sheet_safe(c) for c in COLUMNS])
         for name, row in zip(order, table_rows(order, hosts)):
             r = hosts[name]
-            w.writerow(row[:-1] + [card_ref(getattr(r, "embed_path", None)
-                                            or r.card_path)])
+            w.writerow([_sheet_safe(c) for c in
+                        row[:-1] + [card_ref(getattr(r, "embed_path", None)
+                                             or r.card_path)]])
         for row in quarantine_rows(ingest):
-            w.writerow(row)
+            w.writerow([_sheet_safe(c) for c in row])
 
 
 def build_sheet(order, hosts, out_path, title, adj_report=None,
@@ -1968,11 +2009,11 @@ def build_sheet(order, hosts, out_path, title, adj_report=None,
     unr_font = Font(bold=True, color="843C0C")
     dim_font = Font(color="808080", italic=True)
 
-    ws.append([title] if title else ["Validation Tracker"])
+    ws.append([_sheet_safe(title)] if title else ["Validation Tracker"])
     ws.merge_cells(start_row=1, start_column=1, end_row=1,
                    end_column=len(COLUMNS))
     ws.cell(row=1, column=1).font = Font(bold=True, size=13, color="1F4E79")
-    ws.append(COLUMNS)
+    ws.append([_sheet_safe(c) for c in COLUMNS])
     for c in range(1, len(COLUMNS) + 1):
         cell = ws.cell(row=2, column=c)
         cell.fill = hdr_fill
@@ -1983,7 +2024,7 @@ def build_sheet(order, hosts, out_path, title, adj_report=None,
     n_embedded = 0
     for name, row in zip(order, table_rows(order, hosts)):
         r = hosts[name]
-        ws.append(row)
+        ws.append([_sheet_safe(c) for c in row])
         rn = ws.max_row
         for cname in TRACKER_STEPS + [NCCL]:
             cell = ws.cell(row=rn, column=COLUMNS.index(cname) + 1)
@@ -2029,14 +2070,14 @@ def build_sheet(order, hosts, out_path, title, adj_report=None,
 
     def block(header, lines):
         ws.append([])
-        ws.append([header])
+        ws.append([_sheet_safe(header)])
         hr = ws.max_row
         ws.merge_cells(start_row=hr, start_column=1, end_row=hr,
                        end_column=len(COLUMNS))
         ws.cell(row=hr, column=1).font = Font(bold=True, size=12,
                                               color="1F4E79")
         for text in lines:
-            ws.append([text])
+            ws.append([_sheet_safe(text)])
             rn = ws.max_row
             ws.merge_cells(start_row=rn, start_column=1, end_row=rn,
                            end_column=len(COLUMNS))
@@ -2065,12 +2106,12 @@ def build_sheet(order, hosts, out_path, title, adj_report=None,
             lines.append(ki2_footer(adj_report["ki2_facts"]))
         if untested:
             lines.append(nccl_footer(untested))
-        for host, step, state, note in adj_report["manual"]:
+        for host, step, state, note, reviewer in adj_report["manual"]:
             lines.append(f"Manual adjudication — {host}: {step} set to "
-                         f"{state}." + (f" {note}" if note else ""))
-        for host, step, state, note in adj_report["unmatched"]:
+                         f"{state}. {note} (Reviewer: {reviewer})")
+        for host, step, state, note, reason in adj_report["unmatched"]:
             lines.append(f"NOT APPLIED — adjudication row for {host} "
-                         f"({step} -> {state}) matched no host/step.")
+                         f"({step} -> {state}): {reason}.")
         prov = provenance_line(sources)
         if prov:
             lines.append(prov)
@@ -2170,7 +2211,7 @@ def build_sheet(order, hosts, out_path, title, adj_report=None,
         "an identity mismatch stands until a later run's own identity check",
         "confirms the host.",
     ]:
-        rd.append([line])
+        rd.append([_sheet_safe(line)])
     wb.save(out_path)
     return n_embedded, n_adjudicated
 

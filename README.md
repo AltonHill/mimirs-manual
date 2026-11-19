@@ -4,7 +4,7 @@
 > for GPU and virtualization infrastructure. Pick a track, companyify it,
 > build.
 
-`library 1.0.0` · anonymous by design · Python floors per component (see
+`library 1.1.0` · anonymous by design · Python floors per component (see
 [Requirements](#requirements))
 
 **Versions in this assembly:** BCM track `version 0.9.0` (BCM 11,
@@ -24,7 +24,7 @@ component: see [Requirements](#requirements)). Take only the piece you
 need with a sparse checkout:
 
 ```
-git clone --filter=blob:none --sparse https://github.com/LokiX1/mimirs-manual.git
+git clone --filter=blob:none --sparse https://github.com/AltonHill/mimirs-manual.git
 cd mimirs-manual
 git sparse-checkout set dgx-vitals
 ```
@@ -368,3 +368,10 @@ does not round them to one number.
   only; runs on the node itself or from a jump host over SSH
   (`hosts.csv`); the NCCL step needs the `nccl-tests` binaries on the
   node. `tracker_build.py` additionally needs `openpyxl` and `pillow`.
+
+## License
+
+Mimir's Manual is released under the [MIT License](LICENSE). The
+license covers the manual's own original content; third-party
+components, tools and quoted material keep their own licenses and
+are not relicensed by this repository.

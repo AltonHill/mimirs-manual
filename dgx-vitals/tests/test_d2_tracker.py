@@ -230,3 +230,38 @@ class Ki2LegacyOnly(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FormulaNeutralization(unittest.TestCase):
+    """Issue #10 (2026-11-19): evidence text beginning with =, +, - or
+    @ must not reach a CSV/XLSX cell as a live formula."""
+
+    def setUp(self):
+        self.tb = load_tb()
+        self.tmp = S.tempdir(self)
+
+    def test_formula_leads_prefixed(self):
+        for raw in ("=2+5", "+SUM(A1:A9)", "-2+3", "@SUM(1+1)",
+                    "  =2+5", "\t@cmd"):
+            self.assertEqual(self.tb._sheet_safe(raw), "'" + raw, raw)
+
+    def test_plain_and_numeric_untouched(self):
+        self.assertEqual(self.tb._sheet_safe("gpu01"), "gpu01")
+        self.assertEqual(self.tb._sheet_safe("NOT HEALTHY"),
+                         "NOT HEALTHY")
+        self.assertEqual(self.tb._sheet_safe(100), 100)
+        self.assertEqual(self.tb._sheet_safe(""), "")
+
+    def test_write_csv_neutralizes_quarantine_text(self):
+        import csv as csvmod
+        ingest = type("I", (), {"quarantine": [{
+            "host": "=evil", "source": "fleet.csv",
+            "provenance": "test", "reason": "=2+5"}]})()
+        path = os.path.join(self.tmp, "t.csv")
+        self.tb.write_csv(path, [], {}, ingest)
+        with open(path, newline="") as f:
+            rows = list(csvmod.reader(f))
+        flat = [c for row in rows for c in row]
+        self.assertIn("'=evil", flat)
+        self.assertIn("'=2+5", flat)
+        self.assertNotIn("=2+5", flat)

@@ -76,6 +76,7 @@ from runbook import load_vars, override_requested  # noqa: E402  (one parser for
 
 COLUMNS = ["hostname", "ip", "mac", "role", "category", "interface", "bmc_ip"]
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ROLES = {"ctrl", "worker", "gpu"}
 # RFC 7042 sec. 2.1.2: 00-00-5E-00-53-00..FF is reserved for documentation —
 # it can never belong to a real NIC.
@@ -118,6 +119,16 @@ def check(rows):
         ip = (r.get("ip") or "").strip()
         mac = (r.get("mac") or "").strip().lower()
         role = (r.get("role") or "").strip()
+        cat = (r.get("category") or "").strip()
+        iface = (r.get("interface") or "").strip()
+        for field, val in (("hostname", host), ("category", cat),
+                           ("interface", iface)):
+            if val and not SAFE_NAME_RE.match(val):
+                errors.append(f"{tag}: {field} '{val}' has characters "
+                              "outside [A-Za-z0-9._-] \u2014 it is "
+                              "interpolated verbatim into the generated "
+                              "shell/cmsh script and must be a single "
+                              "safe token")
         if host in seen_host:
             errors.append(f"{tag}: duplicate hostname '{host}'")
         seen_host.add(host)

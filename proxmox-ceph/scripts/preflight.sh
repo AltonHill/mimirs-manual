@@ -21,7 +21,10 @@
 #      either is reported as present-but-NOT-counted, with the wipe step
 #      named (runbook/03-ceph Step 5a) — a used drive is not an OSD
 #      candidate until it is deliberately wiped, and the boot volume (if it
-#      presents as NVMe) must never be. Test hooks (fake-device harness
+#      presents as NVMe) must never be. Each drive's model and serial
+#      are read from sysfs and reported; a drive whose by-id name and
+#      sysfs disagree on the serial is refused outright (identity
+#      mismatch — the OSD steps bind to the same pair of values). Test hooks (fake-device harness
 #      only): CERBERUS_TEST_BYID_DIR, CERBERUS_TEST_SYSFS.
 #   7. storcli: NO virtual drives on the 940-8i (JBOD/raw, never HW RAID)
 #   8. Ceph NOT yet initialized (this runs before 03)
@@ -186,23 +189,47 @@ done < <(
 )
 BLANK_DEVS=()
 USED_DEVS=()
+MISMATCH_DEVS=()
 for b in "${NVME_DEVS[@]}"; do
   parts=0; holders=0
   for p in "$SYSFS/block/$b/$b"p*; do [ -e "$p" ] && parts=$((parts + 1)); done
   for h in "$SYSFS/block/$b/holders/"*; do [ -e "$h" ] && holders=$((holders + 1)); done
+  # Identity from the DEVICE (sysfs), cross-checked against the serial
+  # encoded in its model_serial by-id name. A drive whose two identity
+  # sources disagree is counted NOWHERE: stale link or swapped drive.
+  dev_model="$(tr -s ' ' 2>/dev/null < "$SYSFS/block/$b/device/model" | sed 's/^ //; s/ $//')" || true
+  dev_serial="$(tr -d '[:space:]' 2>/dev/null < "$SYSFS/block/$b/device/serial")" || true
+  link_serial=""
+  for l in "$BYID_DIR"/nvme-*; do
+    [ -e "$l" ] || continue
+    lb="${l##*/}"
+    case "$lb" in nvme-eui.*) continue ;; *_*) ;; *) continue ;; esac
+    [ "$(basename "$(readlink -f "$l")")" = "$b" ] || continue
+    ls_base="${lb#nvme-}"; case "$ls_base" in *_1) ls_base="${ls_base%_1}" ;; esac
+    link_serial="${ls_base##*_}"
+  done
+  if [ -n "$link_serial" ] && [ -n "$dev_serial" ] && [ "$link_serial" != "$dev_serial" ]; then
+    MISMATCH_DEVS+=("$b (by-id serial $link_serial != device serial $dev_serial)")
+    continue
+  fi
   if [ "$parts" -eq 0 ] && [ "$holders" -eq 0 ]; then
     BLANK_DEVS+=("$b")
   else
-    USED_DEVS+=("$b (partitions: $parts, holders: $holders)")
+    USED_DEVS+=("$b (partitions: $parts, holders: $holders; model: ${dev_model:-unknown}, serial: ${dev_serial:-unknown})")
   fi
 done
 for u in "${USED_DEVS[@]}"; do
   warn "[6] present but NOT counted: /dev/$u — not blank. If this is a Ceph drive from an earlier build, wipe it with runbook/03-ceph Step 5a (DESTRUCTIVE; never the boot volume)."
 done
+for m in "${MISMATCH_DEVS[@]}"; do
+  fail "[6] identity MISMATCH: /dev/$m — the by-id name and the device disagree about the serial. Stale link or swapped drive; re-verify this node's drives at 00a §4 before any OSD step. NOT counted."
+done
 if [ "${#BLANK_DEVS[@]}" -ge 2 ]; then
   pass "[6] ${#BLANK_DEVS[@]} blank NVMe device(s) (BOM: 2 OSD drives/node):"
   for b in "${BLANK_DEVS[@]}"; do
-    echo "        /dev/$b  $(lsblk -dno MODEL,SIZE "/dev/$b" 2>/dev/null | tr -s ' ' || true)"
+    b_model="$(tr -s ' ' 2>/dev/null < "$SYSFS/block/$b/device/model" | sed 's/^ //; s/ $//')" || true
+    b_serial="$(tr -d '[:space:]' 2>/dev/null < "$SYSFS/block/$b/device/serial")" || true
+    echo "        /dev/$b  model: ${b_model:-unknown}  serial: ${b_serial:-unknown}  size: $(lsblk -dno SIZE "/dev/$b" 2>/dev/null | tr -s ' ' || true)"
   done
 else
   fail "[6] Expected >=2 BLANK NVMe devices, found ${#BLANK_DEVS[@]} blank of ${#NVME_DEVS[@]} NVMe device(s) — partitioned/held devices are listed above (wipe step: runbook/03-ceph Step 5a); if drives are missing, check backplane cabling (direct-to-CPU x4, NOT behind the 940-8i)."
@@ -210,11 +237,17 @@ fi
 
 # --- [7] storcli: no virtual drives --------------------------------------
 if command -v storcli >/dev/null 2>&1; then
-  VDRIVES="$(storcli /c0/vall show 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+/' || true)"
-  if [ "$VDRIVES" -eq 0 ]; then
-    pass "[7] storcli /c0/vall: no virtual drives (JBOD/raw OK)"
+  VD_RC=0
+  VD_OUT="$(storcli /c0/vall show 2>/dev/null)" || VD_RC=$?
+  if [ "$VD_RC" -ne 0 ] || ! printf '%s\n' "$VD_OUT" | grep -q 'Status = Success'; then
+    fail "[7] storcli /c0/vall show FAILED (exit $VD_RC, no success status) — virtual-drive state is UNVERIFIED, not 'no virtual drives'. Check StorCLI and the 940-8i before proceeding."
   else
-    fail "[7] storcli shows $VDRIVES virtual drive(s) on /c0 — OSD drives must be JBOD, NEVER hardware RAID. Delete virtual drives before Ceph."
+    VDRIVES="$(printf '%s\n' "$VD_OUT" | grep -cE '^[[:space:]]*[0-9]+/' || true)"
+    if [ "$VDRIVES" -eq 0 ]; then
+      pass "[7] storcli /c0/vall: no virtual drives (JBOD/raw OK)"
+    else
+      fail "[7] storcli shows $VDRIVES virtual drive(s) on /c0 — OSD drives must be JBOD, NEVER hardware RAID. Delete virtual drives before Ceph."
+    fi
   fi
   echo "      (Verify the PM1743s do NOT appear under 'storcli /c0/pall show' — they must be direct-to-CPU, not behind the 940-8i.)"
 else

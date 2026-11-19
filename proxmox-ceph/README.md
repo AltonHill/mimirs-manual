@@ -86,7 +86,7 @@ are left untouched. The render report lists what still needs attention:
 values still literally `PLACEHOLDER`; names defined but empty (passed through
 as `$VAR`, never blanked); and every audited value — networks, gateways,
 IPs, the PBS host, DNS, NTP, the mail target (`MAILTO`), the pool sizing
-(`POOL_VM_TARGET_SIZE`, `POOL_VM_QUOTA_BYTES`), the XCC login name, the
+(`POOL_VM_TARGET_SIZE`, `POOL_VM_QUOTA_BYTES`, `POOL_CAPACITY_CEILING_BYTES`), the XCC login name, the
 PBS datastore path (`PBS_DATASTORE_PATH`) — still
 identical to the template's shipped default. It reports; it does not stop
 the render. `cerberus_audit_placeholders` (defined in the variables file)

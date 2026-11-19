@@ -479,7 +479,7 @@ def write_fleet(path, hosts):
 def write_adjudications(path, rows):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["hostname", "step", "state", "note"])
+        w.writerow(["hostname", "step", "state", "note", "reviewer"])
         for r in rows:
             w.writerow(r)
     return path

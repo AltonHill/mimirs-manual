@@ -49,8 +49,10 @@ site render.
 
 The template docs are never modified; render always writes a fresh
 directory. An existing --out is refused; --force replaces it only if a
-previous render wrote it (the .cerberus-render marker) — never an
-arbitrary directory. Relative links are rewritten so the deliverable
+previous render wrote it and it still matches that render's JSON
+file manifest (.cerberus-manifest.json) exactly — every listed file
+present and unmodified, nothing extra, no symlinks. A legacy
+marker-only directory is refused like any other foreign directory. Relative links are rewritten so the deliverable
 stands alone (L2): a linked diagram is copied into <out>/diagrams/; a link
 to a rendered section keeps working; a link to a library file that is not
 part of the deliverable (docs/references.md, a script, the variables
@@ -66,6 +68,8 @@ Python 3.8+, stdlib only (scripts/check.sh proves the grammar floor).
 """
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -77,9 +81,118 @@ DEFAULT_VARS = os.path.join(TRACK_DIR, "runbook", "00-overview", "variables.sh")
 SITE_VARS = os.path.join(TRACK_DIR, "site-vars.sh")
 RUNBOOK_DIR = os.path.join(TRACK_DIR, "runbook")
 REPO_DIR = os.path.dirname(TRACK_DIR)
-MARKER = ".cerberus-render"
+MANIFEST_NAME = ".cerberus-manifest.json"
+RENDER_TOOL = "proxmox-ceph/scripts/render.py"
 IMAGE_EXT = (".svg", ".png", ".jpg", ".jpeg", ".gif")
 LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _write_manifest(out):
+    """Record the fresh render as a JSON file manifest (path + sha256
+    for every file written). --force trusts this manifest and nothing
+    else: the old marker file conferred deletion rights on any
+    directory someone touched it into, and the recursive delete took
+    foreign files along with the render's own."""
+    entries = []
+    for dp, dns, fns in os.walk(out):
+        dns.sort()
+        for fn in sorted(fns):
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, out).replace(os.sep, "/")
+            if rel == MANIFEST_NAME:
+                continue
+            with open(full, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            entries.append({"path": rel, "sha256": digest})
+    entries.sort(key=lambda e: e["path"])
+    with open(os.path.join(out, MANIFEST_NAME), "w") as f:
+        json.dump({"version": 1, "tool": RENDER_TOOL, "files": entries},
+                  f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def _validated_render_files(out):
+    """The manifest's file list when `out` is exactly an intact
+    previous render by this tool — manifest valid, every listed file
+    present, unmodified and not a symlink, every directory accounted
+    for by a listed file, nothing extra present. Otherwise None."""
+    mpath = os.path.join(out, MANIFEST_NAME)
+    if os.path.islink(out) or not os.path.isfile(mpath) \
+            or os.path.islink(mpath):
+        return None
+    try:
+        with open(mpath) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 \
+            or data.get("tool") != RENDER_TOOL:
+        return None
+    files = data.get("files")
+    if not isinstance(files, list):
+        return None
+    listed = {}
+    for e in files:
+        if not isinstance(e, dict):
+            return None
+        rel, digest = e.get("path"), e.get("sha256")
+        if not isinstance(rel, str) or not isinstance(digest, str):
+            return None
+        if rel.startswith("/") or "\\" in rel \
+                or any(p in ("", ".", "..") for p in rel.split("/")):
+            return None
+        if rel in listed:
+            return None
+        listed[rel] = digest
+    seen_files = set()
+    seen_dirs = set()
+    for dp, dns, fns in os.walk(out):
+        for d in dns:
+            full = os.path.join(dp, d)
+            if os.path.islink(full):
+                return None
+            seen_dirs.add(os.path.relpath(full, out).replace(os.sep, "/"))
+        for fn in fns:
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, out).replace(os.sep, "/")
+            if rel == MANIFEST_NAME:
+                continue
+            if os.path.islink(full):
+                return None
+            seen_files.add(rel)
+    if seen_files != set(listed):
+        return None
+    for d in seen_dirs:
+        if not any(p.startswith(d + "/") for p in listed):
+            return None
+    for rel, digest in listed.items():
+        with open(os.path.join(out, *rel.split("/")), "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() != digest:
+                return None
+    return sorted(listed)
+
+
+def _replace_render_dir(out):
+    """Remove a previous render — only the manifest's listed files,
+    never a recursive delete. True when `out` was an intact previous
+    render (now removed); False when it must be refused."""
+    listed = _validated_render_files(out)
+    if listed is None:
+        return False
+    for rel in listed:
+        os.unlink(os.path.join(out, *rel.split("/")))
+    os.unlink(os.path.join(out, MANIFEST_NAME))
+    for dp, dns, fns in os.walk(out, topdown=False):
+        for d in dns:
+            try:
+                os.rmdir(os.path.join(dp, d))
+            except OSError:
+                pass
+    try:
+        os.rmdir(out)
+    except OSError:
+        pass
+    return True
 
 
 def resolve_vars(given):
@@ -272,7 +385,7 @@ def substitute(text, values, passed=None):
 # shipped /mnt/backup-cerberus is a lab path (its guard in
 # cerberus_require_vars is unchanged — this is audit coverage only).
 AUDITED_RE = re.compile(r"(_NET|_GW|_IP|_IPS)$|^(PBS_HOST_IP|DNS_SERVERS|NTP_SERVERS"
-                        r"|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|XCC_USER"
+                        r"|MAILTO|POOL_VM_TARGET_SIZE|POOL_VM_QUOTA_BYTES|POOL_CAPACITY_CEILING_BYTES|XCC_USER"
                         r"|PBS_DATASTORE_PATH)$")
 
 
@@ -346,13 +459,14 @@ def main():
     if os.path.exists(args.out):
         if not args.force:
             sys.exit(f"refusing to overwrite existing {args.out} (use --force)")
-        if not os.path.isfile(os.path.join(args.out, MARKER)):
-            sys.exit(f"refusing to replace {args.out}: it was not written by render.py "
-                     f"(no {MARKER} marker) — choose a fresh --out")
-        shutil.rmtree(args.out)
+        if not _replace_render_dir(args.out):
+            sys.exit(f"refusing to replace {args.out}: it is not an intact "
+                     f"previous render (no valid {MANIFEST_NAME}, or its "
+                     "contents changed — legacy marker-only directories, "
+                     "foreign or edited files, and symlinks are never "
+                     "deleted). Remove it manually if you mean to discard "
+                     "it, or choose a fresh --out")
     os.makedirs(args.out)
-    with open(os.path.join(args.out, MARKER), "w") as f:
-        f.write("written by proxmox-ceph/scripts/render.py; --force may replace this directory\n")
 
     out_abs = os.path.abspath(args.out)
     targets = {os.path.join(RUNBOOK_DIR, s, "README.md"):
@@ -373,6 +487,8 @@ def main():
     for src, dst in sorted(copies.items()):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
+
+    _write_manifest(args.out)
 
     # Report: literal PLACEHOLDER, defined-but-empty (passed through), and
     # audited values still identical to the shipped template defaults.
